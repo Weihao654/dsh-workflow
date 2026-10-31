@@ -38,7 +38,7 @@ export function apply(ctx) {
   }
 
   try {
-    ctx.logger?.info?.('[role-chain] 9 个 chain_* 工具已注册；角色→模型路由已监听 agent/request')
+    ctx.logger?.info?.('[role-chain] 10 个 chain_* 工具已注册；角色→模型路由已监听 agent/request')
   } catch {
     // logging is optional
   }

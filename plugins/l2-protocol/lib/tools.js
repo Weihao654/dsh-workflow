@@ -8,7 +8,7 @@
 
 import { resolveExec } from './roles.js'
 import { forCwd } from './store.js'
-import { describeRoutes } from './role-models.js'
+import { describeRoutes, saveRoleModels } from './role-models.js'
 import * as svc from './service.js'
 
 const ALL = ['plan', 'work', 'code', 'review']
@@ -229,6 +229,54 @@ export function registerTools(ctx, options = {}) {
     roles: ['plan'],
     parameters: { type: 'object', properties: { ...ROUND_ID } },
     run: ({ store, args }) => svc.exportAudit(store, args),
+  })
+
+  push({
+    name: 'chain_role_models',
+    description:
+      '读或改本项目的「角色→模型」表（写入 <cwd>/.dsh/role-chain.json，下一轮请求即生效，无需重启）。改模型只能由根会话（plan）发起；子代理请把请求带回 plan。',
+    roles: ALL,
+    parameters: {
+      type: 'object',
+      properties: {
+        set: {
+          type: 'object',
+          description: '要写入的角色映射，例如 { "code": { "provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "low" } }。',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              provider: { type: 'string' },
+              model: { type: 'string' },
+              reasoningEffort: { type: 'string', description: '可选：minimal / low / medium / high 等，模型支持什么就写什么。' },
+            },
+            required: ['provider', 'model'],
+          },
+        },
+        clear: { type: 'array', items: { type: 'string' }, description: '要删除的角色，例如 ["review"]。' },
+        enabled: { type: 'boolean', description: '可选：整体开关。false 时路由暂停，表保留。' },
+      },
+    },
+    run: ({ ctx, exec, args }) => {
+      const writes = Boolean(args.set || args.clear || typeof args.enabled === 'boolean')
+      if (writes && !exec.isRoot) {
+        return {
+          ok: false,
+          code: 'ESCALATE_TO_PARENT',
+          message: '改角色→模型表要由根会话（plan）发起；子代理请把改动带回 plan。',
+          current: describeRoutes(ctx, exec, tracker),
+        }
+      }
+      if (!writes) return describeRoutes(ctx, exec, tracker)
+      const saved = saveRoleModels(exec.cwd, { set: args.set, clear: args.clear, enabled: args.enabled })
+      if (!saved.ok) return { ok: false, path: saved.path, errors: saved.errors }
+      return {
+        ok: true,
+        path: saved.path,
+        document: saved.document,
+        note: '已写入。从下一次模型请求起生效；如果本会话在浏览器里手动选过模型，手选优先。',
+        effective: describeRoutes(ctx, exec, tracker),
+      }
+    },
   })
 
   return () => {

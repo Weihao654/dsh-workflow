@@ -58,6 +58,8 @@ plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 
 改完下一轮请求就生效：L2 用 `agent/request` 瀑布按 `session.header.agentPreset` 认出角色，查表换 `provider` / `model`。**你在输入框手选过模型的会话，它不会再覆盖**。表写坏了只是路由停用，`chain_status.roleModels.errors` 会说明原因。
 
+不想手写 JSON 也行：在 plan 会话里调 `chain_role_models({ set: { code: { provider: "openai", model: "gpt-6-luna", reasoningEffort: "low" } } })` 即可（原子写入，非法输入拒绝且不动原文件）。图形界面还没做，原因与代价见 [`plugins/l2-protocol/DESIGN.md`](./plugins/l2-protocol/DESIGN.md) §17。
+
 装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。
 
 ## 一眼看懂差别

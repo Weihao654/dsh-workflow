@@ -495,7 +495,42 @@ P0 之后补的两件事，都写在同一个 bundle 里，都不改宿主代码
 
 ### 16.3 已验证 / 未验证
 
-- ✅ `node test/routes.mjs` **34 passed**（解析、坏表、缓存、手选优先、reasoningEffort 丢弃、监听器过滤 non-role、disposer）。
+- ✅ `node test/routes.mjs` **45 passed**（解析、坏表、缓存、手选优先、reasoningEffort 丢弃、监听器过滤 non-role、disposer）。
 - ✅ `node test/smoke.mjs` **21 passed**（未被改动破坏）。
 - ⏳ 宿主监听是否真在真实 `agent/request` 上被调用（需重启后看日志 `[role-chain] plan → provider/model`）。
 - ⏳ 客户端包装是否生效（需人工看新建菜单）。
+
+## §17 角色→模型的图形界面：三条路线与取舍（2026-11-01 追加）
+
+数据层已经定案（§16.1）：表在 `<cwd>/.dsh/role-chain.json`，宿主监听 `agent/request` 应用，手选优先。§17 只讨论「用户怎么改这张表」，因为这是目前唯一要用户手写 JSON 的地方。
+
+### 17.1 已经有的两个入口
+
+1. `chain_role_models` 工具：在对话里让 plan 改（`set` / `clear` / `enabled`），原子写入、非法输入拒绝且不动原文件；读只回显，不写。改表限根会话，子代理得到 `ESCALATE_TO_PARENT`。
+2. 直接编辑文件：git 可追踪，脚本可生成，不需要 DSH 在跑。
+
+两者是同一份数据，不存在同步问题。
+
+### 17.2 三条 UI 路线
+
+| 路线 | 形态 | 代价 | 风险 |
+|---|---|---|---|
+| A. 原生插件 Config | 在插件行声明 `Config`（schemastery），由 Settings → 插件页自动生成表单 | 中：需要一个 schemastery 运行期依赖；且该页是否对**任意行**渲染通用表单尚未验证 | 低（不动 UI 代码），但可能什么都不显示 |
+| B. 自定义设置卡片 | 客户端半身注册 `settings.section`，四个角色 × 模型下拉 + 思考强度下拉，通过 `host.call` 让宿主读写文件 | 高：要确认 package-private RPC 的宿主侧注册 API，还要自己渲染表单、处理焦点与保存态 | 中（完全可控，但代码量最大） |
+| C. 保持对话式 + 文件 | 现状 | 零 | 无 |
+
+### 17.3 建议顺序
+
+先 B 的后半再 A 的前半，理由：B 不依赖"插件页会不会自动渲染"这个未知量，且模型清单本来就要从客户端取（输入框的模型菜单是客户端数据）；A 只有在验证过通用表单存在时才值得做，否则等于白写一个 schema。
+
+B 的最小可行形态（约 150 行客户端 + 30 行宿主）：
+
+- 宿主：`roleChain.readTable()` / `roleChain.writeTable(patch)` 两个方法，包一层现有的 `loadRoutes` / `saveRoleModels`；对外只暴露这两个，路径永远由宿主按会话 cwd 决定，客户端拿不到任意写文件的能力。
+- 客户端：`settings.section` 注册一节「角色→模型」，四行（plan / work / code / review），每行两个下拉（provider+model 取自当前可用模型，effort 取自该模型声明的档位），底部一个开关和一行"手选优先"的说明；保存后调宿主写表，并提示"下一步生效"。
+- 不做模型名下不存在时的校验：那是宿主 `agent/request` 的事，写错只影响该角色，且 `chain_status` 会回显错误。
+
+### 17.4 客户端半身的一个坑（已踩，记下来）
+
+`dsh.client` 的 bundle 是**普通脚本**，会被求值两次；任何顶层 `const` / `let` 第二次就抛 `SyntaxError: Identifier '…' has already been declared`，整个客户端半身当场失效——而且**只在渲染器日志里**留一行，宿主日志看起来一切正常。所以：客户端文件里除 `window.__ModuleLoader__.load({...})` 这一次调用外，不要有任何顶层声明，全部塞进 `factory`。
+
+同时记下：`dsh.client.inject` 写的是**模块图上的包名**，写错不会报错，只是这个模块永远不出现；不需要别的模块时写 `[]` 最稳。

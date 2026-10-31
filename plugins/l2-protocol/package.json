@@ -1,7 +1,7 @@
 {
   "name": "dsh-role-chain-protocol",
   "version": "0.1.0",
-  "description": "Turns the plan-work-code-review role chain into an auditable round state machine: nine chain_* tools that freeze one baseline per round, count failures by signature, tag evidence by the role allowed to write it, block closing until a human gate approves an overrun, and write one audit file per round.",
+  "description": "Turns the plan-work-code-review role chain into an auditable round state machine: ten chain_* tools that freeze one baseline per round, count failures by signature, tag evidence by the role allowed to write it, block closing until a human gate approves an overrun, and write one audit file per round.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 1 | 源文件语法（7 个） | `node --check lib/*.js` | 全部 ok |
 | 2 | 状态机全流程 | `node test/smoke.mjs` | **21 passed, 0 failed** |
-| 3 | 角色→模型路由 | `node test/routes.mjs` | **34 passed, 0 failed** |
+| 3 | 角色→模型路由 + 改表工具 | `node test/routes.mjs` | **45 passed, 0 failed** |
 | 4 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
 | 5 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
 | 6 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 9 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
@@ -78,6 +78,8 @@ chain_gate(kind: "accept", question: "门禁测试：这条链路能继续吗？
 - [ ] 新开 plan 会话，问一句让它调 `chain_status`：`roleModels.exists === true`、`roles.plan` 是你写的值、`thisSession.applied` 与之一致
 - [ ] 在输入框**手动**把模型换成别的，再问一轮：`thisSession.manual` 变成 `true`，模型不再被改回
 - [ ] 故意把 `model` 写错一个字母：对话仍能继续，`roleModels.errors` 里出现 `解析失败` 或该角色被跳过
+- [ ] 不用手改文件也能改表：让 plan 调 `chain_role_models({ set: { code: { provider: "<你配的>", model: "<便宜的>" } } })` → 返回 `ok: true` 与写入路径，随后 `chain_status.roleModels.roles.code` 已经是新值（同一轮内即可看到，模型在下一步生效）
+- [ ] 子代理改表会被挡：在 work 会话里调 `chain_role_models({ enabled: false })` → 得到 `ESCALATE_TO_PARENT`，文件没变
 
 ### 第 5 步：新建菜单只有自带的那几项 + plan（新增）
 

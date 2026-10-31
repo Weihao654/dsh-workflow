@@ -14,7 +14,7 @@
 // took over, and from then on we stay out of that session's way. This keeps the
 // feature from fighting the composer.
 
-import { readFileSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROLES } from './roles.js'
 
@@ -99,6 +99,79 @@ export function loadRoutes(cwd) {
   }
   cache.set(path, { stamp, value })
   return value
+}
+
+/**
+ * Write the project table. Used by the `chain_role_models` tool so a user can
+ * change models from the conversation instead of hand-editing JSON.
+ *
+ * The file is the source of truth (it travels with the repo), so this is a
+ * read-modify-write of the whole document: unknown keys are preserved, `enabled`
+ * is kept unless explicitly changed, and the write is atomic (temp file inside
+ * the same directory, then rename) with UTF-8 and no BOM.
+ */
+export function saveRoleModels(cwd, change = {}) {
+  const path = configPath(cwd)
+  let document = {}
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) document = parsed
+  } catch {
+    // A missing or unreadable file is simply replaced.
+  }
+  if (!document.roleModels || typeof document.roleModels !== 'object') document.roleModels = {}
+
+  const errors = []
+
+  if (typeof change.enabled === 'boolean') document.enabled = change.enabled
+
+  for (const key of Array.isArray(change.clear) ? change.clear : []) {
+    const role = String(key).trim().toLowerCase()
+    if (!ROLES.includes(role)) errors.push(`未知角色 ${key}（只认 ${ROLES.join(' / ')}）`)
+    else delete document.roleModels[role]
+  }
+
+  const patch = change.set && typeof change.set === 'object' ? change.set : {}
+  for (const [key, value] of Object.entries(patch)) {
+    const role = String(key).trim().toLowerCase()
+    if (!ROLES.includes(role)) {
+      errors.push(`未知角色 ${key}（只认 ${ROLES.join(' / ')}）`)
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      errors.push(`${role} 必须是 { provider, model, reasoningEffort? }`)
+      continue
+    }
+    const provider = typeof value.provider === 'string' ? value.provider.trim() : ''
+    const model = typeof value.model === 'string' ? value.model.trim() : ''
+    if (!provider || !model) {
+      errors.push(`${role} 缺少 provider 或 model`)
+      continue
+    }
+    const route = { provider, model }
+    const effort = typeof value.reasoningEffort === 'string' ? value.reasoningEffort.trim() : ''
+    if (effort) route.reasoningEffort = effort
+    document.roleModels[role] = route
+  }
+
+  if (errors.length > 0) return { ok: false, path, errors }
+
+  const { roleModels, errors: invalid } = normalizeRoleModels(document.roleModels)
+  if (invalid.length > 0) return { ok: false, path, errors: invalid }
+
+  const payload = { enabled: document.enabled !== false, roleModels }
+  const directory = join(cwd || '.', CONFIG_DIR)
+  const temp = `${path}.tmp`
+  try {
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+    renameSync(temp, path)
+  } catch (error) {
+    return { ok: false, path, errors: [`写入失败：${error.message}`] }
+  }
+
+  cache.delete(path)
+  return { ok: true, path, document: payload, errors: [] }
 }
 
 /**

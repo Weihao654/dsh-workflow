@@ -10,7 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
 
-import { normalizeRoleModels, loadRoutes, RouteTracker, installRouting, describeRoutes } from '../lib/role-models.js'
+import { normalizeRoleModels, loadRoutes, saveRoleModels, RouteTracker, installRouting, describeRoutes } from '../lib/role-models.js'
 
 const DIR = join(process.cwd(), '.routes-test')
 let passed = 0
@@ -184,6 +184,41 @@ section('installRouting')
 
   routing.dispose()
   check('disposer removes the listener', handler === null)
+}
+
+section('writing the table from the conversation')
+{
+  // Start from a clean project directory: the tool is the only writer here.
+  rmSync(join(DIR, '.dsh'), { recursive: true, force: true })
+
+  const created = saveRoleModels(DIR, {
+    set: { code: { provider: 'cheap', model: 'small', reasoningEffort: 'low' } },
+  })
+  check('a missing file is created', created.ok === true, JSON.stringify(created.errors))
+  check('the write reports its path', created.path.endsWith('role-chain.json'))
+  check('the written table round-trips', loadRoutes(DIR).roleModels.code.model === 'small')
+  check('a second role can be added without losing the first', (() => {
+    const next = saveRoleModels(DIR, { set: { plan: { provider: 'strong', model: 'big' } } })
+    const table = loadRoutes(DIR).roleModels
+    return next.ok && table.code.model === 'small' && table.plan.model === 'big'
+  })())
+
+  const cleared = saveRoleModels(DIR, { clear: ['code'] })
+  check('clear removes exactly one role', cleared.ok && loadRoutes(DIR).roleModels.code === undefined)
+  check('clear keeps the other roles', loadRoutes(DIR).roleModels.plan.model === 'big')
+
+  const off = saveRoleModels(DIR, { enabled: false })
+  check('the switch is persisted', off.ok && loadRoutes(DIR).enabled === false)
+
+  const bad = saveRoleModels(DIR, { set: { nope: { provider: 'x', model: 'y' } } })
+  check('an unknown role is refused', bad.ok === false && bad.errors[0].includes('未知角色'))
+  check('a refused write leaves the file alone', loadRoutes(DIR).roleModels.plan.model === 'big')
+
+  const half = saveRoleModels(DIR, { set: { plan: { provider: 'only-provider' } } })
+  check('a missing model is refused', half.ok === false && half.errors[0].includes('缺少'))
+
+  const reloaded = loadRoutes(DIR)
+  check('the cache follows the written file', reloaded.exists === true && reloaded.enabled === false)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
