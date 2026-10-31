@@ -3,6 +3,8 @@
 把「用户 ↔ plan → work → code → work → review → work → plan → 用户」这条链做成四个 DSH agent preset。
 **纯配置**：没有一个 Host 插件、没有一行运行时 TypeScript，全部是 Loader YAML 里的 preset 声明。
 
+![角色链与一轮六步](../../assets/architecture.png)
+
 ---
 
 ## 一句话定位

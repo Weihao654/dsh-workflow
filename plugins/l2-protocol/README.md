@@ -4,6 +4,8 @@
 
 一句话：把 `plan → work → code → work → review → work → plan` 这条角色链，从"靠提示词自觉"变成**可执行、可审计的轮次状态机**。
 
+![角色链与一轮六步](../../assets/architecture.png)
+
 ---
 
 ## 它是什么
