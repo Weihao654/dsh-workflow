@@ -97,6 +97,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
+      name: 'dsh-role-chain-protocol',
       // No hard service dependency: an inject that never resolves leaves the
       // fiber pending with no log line, which is indistinguishable from "the
       // module never loaded". Poll for the namespace instead and say what
