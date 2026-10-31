@@ -1,6 +1,8 @@
 // Functional smoke test for the round state machine, without the host.
-// Runs the real service.js + store.js against a fake ctx (no subprocess service,
-// so the baseline falls back to no-git mode) and a fake userQuestions.
+// Runs the real service.js + store.js against a fake ctx (a subprocess whose
+// spawn always throws, so the baseline falls back to no-git deterministically —
+// whether or not this checkout happens to sit inside a git repository) and a
+// fake userQuestions.
 
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -12,7 +14,11 @@ await rm(DIR, { recursive: true, force: true })
 
 const store = new RoundStore(DIR)
 const ctx = {
-  subprocess: undefined,
+  subprocess: {
+    spawn() {
+      throw new Error('no subprocess available in this test')
+    },
+  },
   userQuestions: {
     async ask(req) {
       ctx.lastAsk = req
