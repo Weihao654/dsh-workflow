@@ -323,3 +323,16 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: false
+
+# ---------------------------------------------------------------- the entry
+#
+# A session the user opens must start as plan; work / code / review are only
+# reachable as children that plan dispatches. This row replaces the shipped
+# registry default (standard) so a brand-new session lands inside the chain.
+#
+# To deliberately start a work/review session instead (方式 B / 方式 C), change
+# this value or Settings -> Agent presets -> make default; that session is then
+# a root out of role and the chain_* tools keep refusing for it.
+- id: agent-preset-registry
+  config:
+    default: plan

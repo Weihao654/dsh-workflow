@@ -123,7 +123,11 @@ plugins/l1-presets/
 
 ## 怎么真的把这条链跑起来
 
-### 方式 A：最省事，全手动切角色（推荐先这么试）
+本包的 `cordis.patch.yml` 结尾覆盖了预设注册表的默认值（`agent-preset-registry` → `default: plan`），所以**新会话默认就是 plan**。再配上 L2 的客户端半身，新建会话时预设选择器只剩一个 `plan` 标签——work / code / review 只能由 plan 派发。
+
+下面三种"怎么开始"的差别因此变成：默认入口只有方式 A；方式 B / 方式 C 要先在 设置 → Agent presets 改默认（或在没装 L2 客户端半身时直接选）。
+
+### 方式 A：最省事，全手动切角色（默认入口）
 
 DSH 的 preset 是**新建会话时**选的，不是会话中途切的。所以：
 

@@ -72,6 +72,19 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 [info] [role-chain] 9 个 chain_* 工具已注册 [host.kernel.role-chain-protocol] {"pluginId":"include:role-chain-protocol"}
 ```
 
+## 新会话只有 plan（客户端半身）
+
+`lib/client.js` 是浏览器半身，只干一件事：把 New Session 的预设控件换成静态 `plan` 标签。
+
+为什么必须这么绕：`@deepseek-ai/dsh-agent-preset` 的 Config 只有 `id / name / description / order / plugins`，注册表的 `list()` 也把**每个**定义都列出来——没有任何"从选择器隐藏"的字段。唯一的合法杠杆是单槽位遮蔽：`conversation.hero.agentPreset` 是 `single` 槽位，同一优先级只能有一个占用者，**更低优先级会顶掉它**（slots 引擎的报错原文就写着 `register at a different priority to shadow it (lowest renders)`）。所以本模块以 `priority: -1` 注册。
+
+配套的默认值在 L1 里：`plugins/l1-presets/cordis.patch.yml` 结尾用 `- id: agent-preset-registry` + `config: { default: plan }` 把宿主默认从 `standard` 换成 `plan`，于是新会话不依赖这个标签也会落在链路里。
+
+要恢复官方的四选一：
+
+1. 删掉 `package.json` 的 `dsh.client` 段（客户端半身不再加载），或
+2. 在设置 → Agent presets 里改默认，单独开一个 work / review 会话——这条路是有意的出口，但那种会话是"根在错误角色上"，`chain_*` 仍会拒绝。
+
 ## 与设计的三处偏差（如实记录）
 
 | 设计（DESIGN.md） | P0 实际 | 为什么 |
@@ -101,6 +114,7 @@ lib/roles.js          # 角色判定：SessionHeader.agentPreset / composedPrese
 lib/service.js        # 状态机全部逻辑（开轮/T0/计数/证据/门禁/关闭/看板）
 lib/store.js          # 原子 JSON 状态存储，按 cwd 单实例
 lib/tools.js          # 9 个工具定义 + 角色拒绝
+lib/client.js         # 浏览器半身：New Session 的预设控件换成静态 plan 标签
 test/smoke.mjs        # 无宿主自测：21 条断言，node test/smoke.mjs
 DESIGN.md             # 接口骨架 + §15 实施记录
 ACCEPTANCE.md         # 30 秒验收清单
