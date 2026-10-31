@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "roleModels": {
+    "plan": {
+      "provider": "deepseek-account",
+      "model": "deepseek-flash",
+      "reasoningEffort": "high"
+    },
+    "code": {
+      "provider": "openai",
+      "model": "gpt-6-luna"
+    }
+  }
+}

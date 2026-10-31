@@ -49,6 +49,39 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 | `chain_status` | 全部 | 只读看板：当前轮、T0、预算与计数、失败签名、证据、门禁 |
 | `chain_export_audit` | plan | 把整轮导出成 `.dsh/rounds/<roundId>.json` |
 
+## 角色→模型（plan 用强模型，code 用便宜模型）
+
+默认四个角色共用一个模型：子代理会继承父代理的 AgentOptions。要按角色分工，在**项目里**放一张表就行：
+
+`<项目根>/.dsh/role-chain.json`
+
+```json
+{
+  "roleModels": {
+    "plan": { "provider": "deepseek-account", "model": "deepseek-flash", "reasoningEffort": "high" },
+    "code": { "provider": "openai", "model": "gpt-6-luna" }
+  }
+}
+```
+
+- 只写想改的角色；没写的角色保持原样。
+- `provider` / `model` 必须与 DSH 里配置的**完全一致**（以输入框模型菜单里显示的为准）。
+- `reasoningEffort` 可选；换了模型却没写它时，旧的 effort 会被丢弃（effort id 是跟模型绑的）。
+- `"enabled": false` 整体关掉。
+- 改完**下一轮请求就生效**，不用重启、不用改 YAML。
+- **手选优先**：一旦你在输入框手动换过模型，那个会话就不再被路由覆盖。
+- 表写坏了不会中断对话：解析失败时路由整体停用，原因回显在 `chain_status.roleModels.errors`。
+
+`chain_status` 会回显：表在哪、解析出什么、本会话实际生效的是哪条（`thisSession.applied`）、是不是已经让位给手选（`thisSession.manual`）。
+
+机制是一行宿主监听：`agent/request` 瀑布（每步请求前）读 `session.header.agentPreset` 认出角色，查表替换 `provider` / `model`。所以它不依赖 preset、不依赖 YAML，也不需要重装。
+
+## 新建会话菜单
+
+装了这个 bundle 后，新建会话的预设菜单只保留 DSH 自带的那几项 + `plan`；`work` / `code` / `review` 不出现在菜单里，它们只由 plan 派发。
+
+实现方式是客户端把 `agentPresets.list()` 的返回过滤掉这三个 id，**不改 DSH 自己的选择器控件**。万一包装没装上，菜单会退回显示全部——失败开放，不会白屏。
+
 ## 六步怎么映射到工具
 
 | 协议步骤 | 工具 |
@@ -94,16 +127,20 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 ## 文件
 
 ```
-package.json          # dsh-role-chain-protocol 0.1.0, dsh.bundle.patch
-cordis.patch.yml      # 1 个全局行 role-chain-protocol
-lib/index.js          # 插件入口：inject ['tools']，注册 9 个工具，ctx.effect 释放
-lib/roles.js          # 角色判定：SessionHeader.agentPreset / composedPreset / 是否根 / cwd
-lib/service.js        # 状态机全部逻辑（开轮/T0/计数/证据/门禁/关闭/看板）
-lib/store.js          # 原子 JSON 状态存储，按 cwd 单实例
-lib/tools.js          # 9 个工具定义 + 角色拒绝
-test/smoke.mjs        # 无宿主自测：21 条断言，node test/smoke.mjs
-DESIGN.md             # 接口骨架 + §15 实施记录
-ACCEPTANCE.md         # 30 秒验收清单
+package.json              # dsh-role-chain-protocol 0.1.0, dsh.bundle.patch, dsh.client
+cordis.patch.yml          # 1 个全局行 role-chain-protocol
+lib/index.js              # 插件入口：inject ['tools']，注册 9 个工具 + 装 agent/request 路由
+lib/roles.js              # 角色判定：SessionHeader.agentPreset / composedPreset / 是否根 / cwd
+lib/service.js            # 状态机全部逻辑（开轮/T0/计数/证据/门禁/关闭/看板）
+lib/store.js              # 原子 JSON 状态存储，按 cwd 单实例
+lib/tools.js              # 9 个工具定义 + 角色拒绝 + chain_status 回显模型映射
+lib/role-models.js        # 角色→模型：读 .dsh/role-chain.json，agent/request 瀑布换模型，手选优先
+lib/client.js             # 客户端半身：把 work/code/review 从新建菜单里过滤掉
+role-chain.example.json   # 角色→模型表的样子
+test/smoke.mjs            # 无宿主自测：21 条断言，node test/smoke.mjs
+test/routes.mjs           # 路由自测：34 条断言，node test/routes.mjs
+DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由
+ACCEPTANCE.md             # 30 秒验收清单
 ```
 
 ## 关键词

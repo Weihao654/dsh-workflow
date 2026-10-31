@@ -8,6 +8,7 @@
 
 import { resolveExec } from './roles.js'
 import { forCwd } from './store.js'
+import { describeRoutes } from './role-models.js'
 import * as svc from './service.js'
 
 const ALL = ['plan', 'work', 'code', 'review']
@@ -55,7 +56,8 @@ const ROUND_ID = {
   },
 }
 
-export function registerTools(ctx) {
+export function registerTools(ctx, options = {}) {
+  const tracker = options.tracker
   const disposers = []
 
   const push = (spec) => {
@@ -210,10 +212,15 @@ export function registerTools(ctx) {
 
   push({
     name: 'chain_status',
-    description: '只读看板：当前轮次、T0、预算与计数、失败签名、证据与门禁。',
+    description:
+      '只读看板：当前轮次、T0、预算与计数、失败签名、证据与门禁，以及角色→模型映射（含本会话实际生效的那条）。',
     roles: ALL,
     parameters: { type: 'object', properties: { ...ROUND_ID } },
-    run: ({ store, args }) => svc.status(store, args),
+    run: ({ ctx, store, exec, args }) => {
+      const board = svc.status(store, args)
+      board.roleModels = describeRoutes(ctx, exec, tracker)
+      return board
+    },
   })
 
   push({

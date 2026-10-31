@@ -41,6 +41,25 @@ plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 
 两者都是普通 DSH bundle（`dsh.bundle.patch` 指向各自的 `cordis.patch.yml`），安装后可在插件列表确认 `fiberPhase: active`。详细前置、卸载与验证见各自 README。
 
+## 角色→模型（plan 用强模型，code 用便宜模型）
+
+子代理默认继承父代理的模型，所以四个角色本来共用一个。要分工，在**项目里**放一张表：
+
+`<项目根>/.dsh/role-chain.json`
+
+```json
+{
+  "roleModels": {
+    "plan": { "provider": "deepseek-account", "model": "deepseek-flash", "reasoningEffort": "high" },
+    "code": { "provider": "openai", "model": "gpt-6-luna" }
+  }
+}
+```
+
+改完下一轮请求就生效：L2 用 `agent/request` 瀑布按 `session.header.agentPreset` 认出角色，查表换 `provider` / `model`。**你在输入框手选过模型的会话，它不会再覆盖**。表写坏了只是路由停用，`chain_status.roleModels.errors` 会说明原因。
+
+装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。
+
 ## 一眼看懂差别
 
 不装 L2 时，"这一轮只有一个 T0"是一句提示词，模型忘了就忘了；

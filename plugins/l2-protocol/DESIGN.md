@@ -461,3 +461,41 @@ test/smoke.mjs    无宿主自测 21 条
 4. `tokenMeter.measure` 自动累加一轮费用（按四个 session 汇总），替换人工填的 `closeout.cost`。
 5. `checkBaseline` 增加 `changedFiles`，与工单 scope 比对（P2 的"修正要限定"）。
 
+
+
+## §16 模型路由与新建菜单（2026-11-01 追加）
+
+P0 之后补的两件事，都写在同一个 bundle 里，都不改宿主代码。
+
+### 16.1 角色→模型
+
+问题：子代理继承父代理的 `AgentOptions`，四个角色默认同一个模型。技术上的缝是 `agent/request`（`waterfall`，每步一次，`payload.agent` 就是发起者，`await next()` 给出本步将用的 `LlmCallConfig`）。
+
+落地：
+
+| 项 | 决定 |
+|---|---|
+| 表放哪 | `<cwd>/.dsh/role-chain.json`（随项目走，不进 profile） |
+| 谁生效 | `lib/role-models.js` 的 `installRouting(ctx)`：`ctx.on('agent/request', …)`，读 `session.header.agentPreset` 认角色 |
+| 如何认会话 | `ctx.get('sessions').get(id).header`；cwd 取 `header.cwd` |
+| 手选优先 | `RouteTracker`：本步 base 与"上次我们写下的 route"不一致 ⇒ 判定人手接管，此后该会话不再覆盖 |
+| 缓存 | 按 mtime+size 缓存解析结果；改文件下一轮生效，无需重启 |
+| 坏表 | 解析失败 ⇒ 整个路由停用，原因进 `chain_status.roleModels.errors`，不抛错 |
+| 观测 | `chain_status.roleModels`：表路径 / 解析结果 / `thisSession.applied` / `thisSession.manual` |
+
+`reasoningEffort` 是模型相关的 id：换模型时若表里没写 effort，就丢弃 base 里的旧值（否则会把上一个模型的 effort 带过去）。
+
+### 16.2 新建菜单过滤
+
+需求：新建会话只要能创建 `plan`，`work`/`code`/`review` 只由 plan 派发；**DSH 自带的预设必须保留**。
+
+约束：注册表 `agentPresets.list()` 没有"隐藏"字段；新建菜单是单占位槽 `conversation.hero.agentPreset`，替换它要重写整个选择器（含草稿同步）。
+
+采用：客户端半身 `lib/client.js` 包一层 `ctx.remote.agentPresets.list()`，过滤掉 `work|code|review` 三个 id。选择器本身不动，失败时退回全量（失败开放）。`dsh.client.inject` 只写包名 `@deepseek-ai/dsh-client-ui-agent-preset`（模块图边，不是服务）。
+
+### 16.3 已验证 / 未验证
+
+- ✅ `node test/routes.mjs` **34 passed**（解析、坏表、缓存、手选优先、reasoningEffort 丢弃、监听器过滤 non-role、disposer）。
+- ✅ `node test/smoke.mjs` **21 passed**（未被改动破坏）。
+- ⏳ 宿主监听是否真在真实 `agent/request` 上被调用（需重启后看日志 `[role-chain] plan → provider/model`）。
+- ⏳ 客户端包装是否生效（需人工看新建菜单）。

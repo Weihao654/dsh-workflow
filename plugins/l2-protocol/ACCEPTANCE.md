@@ -8,11 +8,12 @@
 
 | # | 项 | 命令 | 结果 |
 |---|---|---|---|
-| 1 | 五个源文件语法 | `node --check lib/*.js` | 全部 ok |
+| 1 | 源文件语法（7 个） | `node --check lib/*.js` | 全部 ok |
 | 2 | 状态机全流程 | `node test/smoke.mjs` | **21 passed, 0 failed** |
-| 3 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
-| 4 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
-| 5 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 9 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
+| 3 | 角色→模型路由 | `node test/routes.mjs` | **34 passed, 0 failed** |
+| 4 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
+| 5 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
+| 6 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 9 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
 
 自测覆盖的 8 组（`test/smoke.mjs`）：
 
@@ -66,7 +67,27 @@ chain_gate(kind: "accept", question: "门禁测试：这条链路能继续吗？
 
 > 这一步是这个插件唯一无法离线验证的硬点：`userQuestions.ask` 的行为依赖真实 UI。
 
-### 第 4 步：一轮完整跑通（可选，5 分钟）
+### 第 4 步：角色→模型真的换了模型（新增，约 2 分钟）
+
+前提：**重启一次 DSH**（宿主监听器与客户端半身都在启动时装载），然后在**你的项目目录**建 `.dsh/role-chain.json`：
+
+```json
+{ "roleModels": { "plan": { "provider": "deepseek-account", "model": "deepseek-flash" } } }
+```
+
+- [ ] 新开 plan 会话，问一句让它调 `chain_status`：`roleModels.exists === true`、`roles.plan` 是你写的值、`thisSession.applied` 与之一致
+- [ ] 在输入框**手动**把模型换成别的，再问一轮：`thisSession.manual` 变成 `true`，模型不再被改回
+- [ ] 故意把 `model` 写错一个字母：对话仍能继续，`roleModels.errors` 里出现 `解析失败` 或该角色被跳过
+
+### 第 5 步：新建菜单只有自带的那几项 + plan（新增）
+
+- [ ] 新建会话的预设菜单里**还在**的：DSH 自带的 `standard` / `ptc` / `minimal` / `cordis`（以你机器为准）+ `plan`
+- [ ] 菜单里**看不到**：`work` / `code` / `review`
+- [ ] Settings → Agent Presets 页里它们仍在（被过滤的只是新建菜单，不是注册表）
+
+> 若第 5 步菜单里仍然出现 work/code/review，说明客户端过滤没装上（失败开放）。这不会影响功能，只是回到装之前的样子；把菜单截图给我，我改包装点。
+
+### 第 6 步：一轮完整跑通（可选，5 分钟）
 
 plan 会话里让它按顺序来：`chain_open_round` → 派 work 会话 `chain_freeze_baseline` → code 写一条 `chain_record_evidence layer=command` → review 写一条 `layer=review` → `chain_close_round`。
 
@@ -78,6 +99,7 @@ plan 会话里让它按顺序来：`chain_open_round` → 派 work 会话 `chain
 ## 三、判定标准
 
 - 第 1、2、3 步全绿 → **P0 验收通过**（工具可见性符合 P0 设计，门禁为人机交替可用）。
+- 第 4、5 步是新加的两条（角色→模型、新建菜单过滤），它们失败不影响 P0 状态机：路由失败只是模型没换；菜单过滤失败只是多显示三个选项。
 - 第 1 步发现 plan 会话能看见 `write` → L1 的 preset 工具矩阵没生效，要先修 L1。
 - 第 3 步弹不出卡片或一直等到超时 → `userQuestions.ask` 的请求形状要按真实契约修正（`lib/service.js` 的 `askGate`），这是唯一预期需要回改的地方。
 - 第 4 步关闭被拒 → 看错误里的 `problems` 列表，它就是六项校验的缺口清单。
