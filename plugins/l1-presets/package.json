@@ -1,0 +1,26 @@
+{
+  "name": "dsh-role-chain-presets",
+  "version": "1.0.0",
+  "description": "Four agent presets (plan, work, code, review) for the six-step role chain, each with its own tool matrix and discipline prompt; configuration only, no host code.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weihao654/dsh-workflow.git",
+    "directory": "plugins/l1-presets"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "agent-preset",
+    "workflow",
+    "role-chain"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

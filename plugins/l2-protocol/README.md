@@ -8,7 +8,7 @@
 
 ## 它是什么
 
-DSH 已经能声明四个角色（本仓库的 `l1-presets` 做到了：plan / work / code / review 各自的人设与工具集），但管不住**纪律**：T0 是不是唯一、失败到底重试了几次、证据是谁给的、这一轮花了多少、什么时候算关闭。这些在 L1 里全靠模型自觉加人眼检查，事后无法审计。
+DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：plan / work / code / review 各自的人设与工具集），但管不住**纪律**：T0 是不是唯一、失败到底重试了几次、证据是谁给的、这一轮花了多少、什么时候算关闭。这些在 L1 里全靠模型自觉加人眼检查，事后无法审计。
 
 这个插件补的就是这一层。它不新增角色，也不改源码工具——它在四个角色上面加一层 `chain_*` 协议工具，把六步里"必须成立的事实"写进磁盘、卡在工具调用上。
 
@@ -60,7 +60,7 @@ DSH 已经能声明四个角色（本仓库的 `l1-presets` 做到了：plan / w
 
 ## 安装与前置
 
-1. 先装本仓库的 `l1-presets`（四个 preset 就位：plan / work / code / review）。
+1. 先装本仓库的 `plugins/l1-presets`（四个 preset 就位：plan / work / code / review）。
 2. 再装本 bundle：`plugin_manager install_bundle` 指向本目录，然后重载 Loader 或新开会话。
 3. **必须新开会话**：preset 修订与工具集在会话创建时冻结。
 
@@ -92,7 +92,7 @@ DSH 已经能声明四个角色（本仓库的 `l1-presets` 做到了：plan / w
 ## 文件
 
 ```
-package.json          # @local/dsh-role-chain-protocol 0.1.0, dsh.bundle.patch
+package.json          # dsh-role-chain-protocol 0.1.0, dsh.bundle.patch
 cordis.patch.yml      # 1 个全局行 role-chain-protocol
 lib/index.js          # 插件入口：inject ['tools']，注册 9 个工具，ctx.effect 释放
 lib/roles.js          # 角色判定：SessionHeader.agentPreset / composedPreset / 是否根 / cwd

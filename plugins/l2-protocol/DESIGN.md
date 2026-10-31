@@ -6,7 +6,7 @@
 
 ## 0. 这份文档要解决的问题
 
-L1（本仓库 `l1-presets/`，已装）只做到了"四个角色能被选出来，各带不同的工具集"。
+L1（本仓库 `plugins/l1-presets/`，已装）只做到了"四个角色能被选出来，各带不同的工具集"。
 它管不住的是**纪律**：T0 是不是唯一、失败到底重试了几次、证据是谁给的、这一轮花了多少、什么时候算关闭。
 这些全部靠提示词 + 人眼检查，不可审计。
 
@@ -52,8 +52,8 @@ work / code / review 都是 plan spawn 出来的子代理 → **它们没有人�
 一个 bundle，一条 patch，两类 row：
 
 ```
-l2-protocol/
-  package.json                      # @local/dsh-role-chain-protocol, dsh.bundle.patch -> ./cordis.patch.yml
+plugins/l2-protocol/
+  package.json                      # dsh-role-chain-protocol, dsh.bundle.patch -> ./cordis.patch.yml
   cordis.patch.yml                  # 1 个全局 store row + 4 个 preset 子行注入
   lib/
     index.js                        # 全局 row: 开 domain, 注册 roleChain 服务
@@ -80,7 +80,7 @@ l2-protocol/
 # cordis.patch.yml（骨架，不是最终写法）
 insert:
   - id: role-chain-store            # 全局唯一实例
-    name: '@local/dsh-role-chain-protocol'
+    name: 'dsh-role-chain-protocol'
     config:
       domain: role-chain
       limits: { testFailures: 3, reruns: 2, restarts: 3 }
@@ -92,7 +92,7 @@ insert:
   - id: preset-plan                 # 已存在，patch 里用 insert 进 group 的方式追加
     ...
     plugins:
-      - name: '@local/dsh-role-chain-protocol/tools'
+      - name: 'dsh-role-chain-protocol/tools'
         inject: [roleChain]
         config: { role: plan }
 ```
@@ -409,8 +409,8 @@ P0 会**真实写入你的 profile**（新增一个 bundle 依赖）。按规矩
 ### 实际落地的文件
 
 ```
-package.json      @local/dsh-role-chain-protocol 0.1.0, type module, dsh.bundle.patch
-cordis.patch.yml  1 个全局行：{ id: role-chain-protocol, name: '@local/dsh-role-chain-protocol' }
+package.json      dsh-role-chain-protocol 0.1.0, type module, dsh.bundle.patch
+cordis.patch.yml  1 个全局行：{ id: role-chain-protocol, name: 'dsh-role-chain-protocol' }
 lib/index.js      name = 'role-chain-protocol'; inject = ['tools']
                   apply(ctx) → registerTools(ctx) + ctx.effect(释放)；日志 "[role-chain] 9 个 chain_* 工具已注册"
 lib/roles.js      ROLES = ['plan','work','code','review']

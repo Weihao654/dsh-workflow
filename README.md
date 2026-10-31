@@ -14,8 +14,8 @@
 
 | 目录 | 是什么 | 状态 |
 |---|---|---|
-| [`l1-presets/`](./l1-presets/) | **纯配置**：四个 preset（plan / work / code / review）的人设与工具矩阵，外加 `protocol/ROUND-PROTOCOL.md` 可抄进项目 `AGENTS.md`。零宿主代码 | v1.0 已装 |
-| [`l2-protocol/`](./l2-protocol/) | **协议插件**：9 个 `chain_*` 工具 + 轮次状态机，把 T0 唯一、计数越限、证据分层、门禁阻塞、收尾校验变成硬约束，并把每轮落盘成审计文件 | v0.1（P0）已装，21 条自测通过 |
+| [`plugins/l1-presets/`](./plugins/l1-presets/) | **纯配置**：四个 preset（plan / work / code / review）的人设与工具矩阵，外加 `protocol/ROUND-PROTOCOL.md` 可抄进项目 `AGENTS.md`。零宿主代码 | v1.0 已装 |
+| [`plugins/l2-protocol/`](./plugins/l2-protocol/) | **协议插件**：9 个 `chain_*` 工具 + 轮次状态机，把 T0 唯一、计数越限、证据分层、门禁阻塞、收尾校验变成硬约束，并把每轮落盘成审计文件 | v0.1（P0）已装，21 条自测通过 |
 
 分开是有意的：L1 决定"谁有什么工具"，L2 决定"事实必须成立"。L2 依赖 L1（按角色判定），L1 不依赖 L2（不装 L2 也能用，只是纪律靠自觉）。
 
@@ -23,9 +23,18 @@
 
 顺序：先 L1，后 L2，然后**新开会话**（preset 与工具集在会话创建时冻结）。
 
+从本仓库直接装，不需要发布到 npm（`#path:` 选子包）：
+
 ```
-plugin_manager install_bundle target: <本仓库>/l1-presets
-plugin_manager install_bundle target: <本仓库>/l2-protocol
+plugin_manager install_bundle target: github:Weihao654/dsh-workflow#path:/plugins/l1-presets
+plugin_manager install_bundle target: github:Weihao654/dsh-workflow#path:/plugins/l2-protocol
+```
+
+本地开发时也可以直接指向目录：
+
+```
+plugin_manager install_bundle target: <本仓库>/plugins/l1-presets
+plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 ```
 
 两者都是普通 DSH bundle（`dsh.bundle.patch` 指向各自的 `cordis.patch.yml`），安装后可在插件列表确认 `fiberPhase: active`。详细前置、卸载与验证见各自 README。
@@ -39,9 +48,9 @@ plugin_manager install_bundle target: <本仓库>/l2-protocol
 
 ## 诚实声明
 
-- "角色看不见不该有的工具"在 L1 是**结构性**的（工具没挂），在 L2 的 P0 是**代码拒绝**（`ROLE_DENIED`）——迁移计划见 `l2-protocol/DESIGN.md` §15。
+- "角色看不见不该有的工具"在 L1 是**结构性**的（工具没挂），在 L2 的 P0 是**代码拒绝**（`ROLE_DENIED`）——迁移计划见 `plugins/l2-protocol/DESIGN.md` §15。
 - `work` 的只读是**软的**：它需要 shell 跑验证命令，所以仍能重定向写文件。
-- 门禁弹卡这一条只能在你自己的会话里验证，步骤见 `l2-protocol/ACCEPTANCE.md`。
+- 门禁弹卡这一条只能在你自己的会话里验证，步骤见 `plugins/l2-protocol/ACCEPTANCE.md`。
 
 ## 关键词
 

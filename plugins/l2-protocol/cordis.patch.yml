@@ -9,4 +9,4 @@
 
 - insert:
     - id: role-chain-protocol
-      name: '@local/dsh-role-chain-protocol'
+      name: 'dsh-role-chain-protocol'

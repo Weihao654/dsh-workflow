@@ -1,0 +1,34 @@
+{
+  "name": "dsh-role-chain-protocol",
+  "version": "0.1.0",
+  "description": "Turns the plan-work-code-review role chain into an auditable round state machine: nine chain_* tools that freeze one baseline per round, count failures by signature, tag evidence by the role allowed to write it, block closing until a human gate approves an overrun, and write one audit file per round.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weihao654/dsh-workflow.git",
+    "directory": "plugins/l2-protocol"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "workflow",
+    "round",
+    "audit",
+    "subagent",
+    "role-chain"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

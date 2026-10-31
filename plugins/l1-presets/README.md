@@ -15,7 +15,7 @@
 ## 文件
 
 ```
-l1-presets/
+plugins/l1-presets/
 ├── package.json              bundle 声明（dsh.bundle.patch 指向下面的 patch）
 ├── cordis.patch.yml          四个 preset 的全部定义（唯一有实质内容的文件）
 ├── protocol/
@@ -45,8 +45,8 @@ l1-presets/
 
 | 什么 | 在哪 |
 |---|---|
-| 依赖登记 | `C:\Users\Weihao Chen\.dsh\profiles\desktop\package.json` → `"@local/dsh-role-chain-presets": "link:C:/Users/Weihao Chen/Desktop/DSH/dsh-workflow/l1-presets"` |
-| bundle 顺序 | 同文件 `dsh.profile.bundles` 最后一项 `@local/dsh-role-chain-presets` |
+| 依赖登记 | `C:\Users\Weihao Chen\.dsh\profiles\desktop\package.json` → `"dsh-role-chain-presets": "link:C:/Users/Weihao Chen/Desktop/DSH/dsh-workflow/plugins/l1-presets"` |
+| bundle 顺序 | 同文件 `dsh.profile.bundles` 最后一项 `dsh-role-chain-presets` |
 | 安装形态 | `profiles\desktop\node_modules\@local\dsh-role-chain-presets` 是指向本目录的 **Junction** |
 
 因为是链接而不是拷贝，**改 `cordis.patch.yml` 不需要重装**——重载 Loader 或重开会话即可生效。
@@ -54,7 +54,7 @@ l1-presets/
 ### 卸载
 
 ```powershell
-# plugin_manager  action: remove_bundle  target: @local/dsh-role-chain-presets
+# plugin_manager  action: remove_bundle  target: dsh-role-chain-presets
 ```
 
 四个 preset 随 bundle 一起消失。已经**创建过**的会话不受影响（preset revision 在 Agent 创建时冻结），但下次开新会话就选不到了。
