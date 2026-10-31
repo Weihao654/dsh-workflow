@@ -1,12 +1,12 @@
 # L2 轮次协议插件 · 接口骨架 v0.1（待评审）
 
-状态：**设计稿，不可运行**。本目录只有这份文档，没有一行实现代码，也没有安装任何 bundle。
+状态：**§1–§14 是设计稿；P0 已实现并安装，实施记录与三处偏差见 §15。** 先读 §15 再读前面的设计，能看出哪里照做了、哪里改了。
 
 ---
 
 ## 0. 这份文档要解决的问题
 
-L1（`workflow-l1`，已装）只做到了"四个角色能被选出来，各带不同的工具集"。
+L1（本仓库 `l1-presets/`，已装）只做到了"四个角色能被选出来，各带不同的工具集"。
 它管不住的是**纪律**：T0 是不是唯一、失败到底重试了几次、证据是谁给的、这一轮花了多少、什么时候算关闭。
 这些全部靠提示词 + 人眼检查，不可审计。
 
@@ -52,7 +52,7 @@ work / code / review 都是 plan spawn 出来的子代理 → **它们没有人�
 一个 bundle，一条 patch，两类 row：
 
 ```
-workflow-l2/
+l2-protocol/
   package.json                      # @local/dsh-role-chain-protocol, dsh.bundle.patch -> ./cordis.patch.yml
   cordis.patch.yml                  # 1 个全局 store row + 4 个 preset 子行注入
   lib/
