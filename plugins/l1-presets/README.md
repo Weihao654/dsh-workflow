@@ -35,7 +35,8 @@ plugins/l1-presets/
 已在本机装好并通过 Loader 校验（见下方「验证」）。换机器重装：
 
 ```powershell
-# 在 DSH 里（对话方式）：
+# 在 DSH 里（对话方式），二选一：
+# plugin_manager  action: install_bundle  target: github:Weihao654/dsh-workflow#path:/plugins/l1-presets
 # plugin_manager  action: install_bundle  target: <本目录绝对路径>
 ```
 
@@ -47,7 +48,7 @@ plugins/l1-presets/
 |---|---|
 | 依赖登记 | `C:\Users\Weihao Chen\.dsh\profiles\desktop\package.json` → `"dsh-role-chain-presets": "link:C:/Users/Weihao Chen/Desktop/DSH/dsh-workflow/plugins/l1-presets"` |
 | bundle 顺序 | 同文件 `dsh.profile.bundles` 最后一项 `dsh-role-chain-presets` |
-| 安装形态 | `profiles\desktop\node_modules\@local\dsh-role-chain-presets` 是指向本目录的 **Junction** |
+| 安装形态 | `C:\Users\Weihao Chen\.dsh\profiles\desktop\node_modules\dsh-role-chain-presets` 是指向本目录的 **Junction** |
 
 因为是链接而不是拷贝，**改 `cordis.patch.yml` 不需要重装**——重载 Loader 或重开会话即可生效。
 
