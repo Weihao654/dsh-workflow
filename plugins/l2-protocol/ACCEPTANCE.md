@@ -29,24 +29,26 @@
 
 ## 二、需要你在真实会话里做（约 30 秒）
 
-前提：已装 `plugins/l1-presets` + 本插件，并**新开一个会话**（preset 在会话创建时冻结）。
+前提：已装 `plugins/l1-presets` + 本插件，并**重启 DSH 后新开一个会话**（preset 在会话创建时冻结）。
 
-### 第 1 步：角色看得见什么（§10.B）
+### 第 1 步：入口只剩 plan，角色看得见什么（§10.B）
 
-新会话 → preset 选 **`plan`** → 输入 `/` 或直接看工具列表，确认：
+新会话页面 → 预设控件应当只剩一个 **`plan`** 标签（四个选项的菜单不再出现）。直接开会话，然后：
 
 - [ ] 能看见 `chain_status`、`chain_open_round`、`chain_close_round`、`chain_gate`（9 个都在）
 - [ ] `write` / `edit` **不在**（plan 是只读人设）
 - [ ] `dispatch_work` 在（派发工具）
 
-再开一个 **`review`** 会话：
+`review` 是只读审计员，单独用最划算，但它现在是"非默认角色"，要单独开需两步：设置 → Agent presets 把默认改成 `review`，再新开会话。那会：
 
 - [ ] 有 `chain_record_evidence`、`chain_status`
 - [ ] 没有 shell（`pwsh` / `bash` 都不在）
 
+看完记得把默认改回 `plan`。
+
 ### 第 2 步：错的角色会被拒（不是"看不见"）
 
-在 **code** 会话里让模型调一次 `chain_open_round`（只有 plan 能开）：
+在 **plan** 会话里让它 `dispatch_code` 派一个 code 子代理，再让这个子代理调一次 `chain_open_round`（只有 plan 能开）：
 
 - [ ] 返回 `ROLE_DENIED: chain_open_round 只给 plan，当前角色是 code。`
 
