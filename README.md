@@ -41,20 +41,6 @@ plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 
 两者都是普通 DSH bundle（`dsh.bundle.patch` 指向各自的 `cordis.patch.yml`），安装后可在插件列表确认 `fiberPhase: active`。详细前置、卸载与验证见各自 README。
 
-## 开始：新会话只剩 plan
-
-装好后新建会话，**预设选择器只显示 `plan`**：
-
-- L1 把预设注册表的默认值改成 `plan`——新会话默认就落在链路里，不用挑。
-- L2 带一个客户端半身，把 New Session 的预设控件换成一个静态 `plan` 标签。DSH 的预设名册没有"从选择器隐藏"的字段，所以这是唯一不改宿主代码的做法（单槽位按优先级遮蔽，官方也允许这么干）。
-
-work / code / review 因此**只能由 plan 派发**，符合链路本意。仍要单独开 work 或 review 会话（旧的"方式 B / 方式 C"），两条路：
-
-1. 设置 → Agent presets → 把默认改成 work 或 review；或
-2. 去掉 `plugins/l2-protocol/package.json` 里的 `dsh.client` 段，重装（或重启）后官方选择器回来。
-
-两种做法都是**故意让根会话跑在非 plan 角色上**，这时 `chain_*` 工具仍按角色拒绝，不会假装它是合法入口。
-
 ## 一眼看懂差别
 
 不装 L2 时，"这一轮只有一个 T0"是一句提示词，模型忘了就忘了；
