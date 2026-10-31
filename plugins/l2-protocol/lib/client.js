@@ -20,9 +20,23 @@
 //      (`Object.defineProperty(this, method, { get() { return (...args) => … } })`),
 //      so `namespace.list = wrapped` throws in strict mode. Redefine the
 //      property instead.
+//
+// `dsh.client.inject` in package.json is deliberately EMPTY: those entries are
+// client module-graph edges, and an edge naming a module the loader does not
+// have drops this whole module without an error. Nothing here needs the picker's
+// module — only one remote namespace, resolved at runtime from ctx.
 
 const HIDDEN = ['work', 'code', 'review']
 const INSTALLED = new WeakSet()
+
+// Module-scope marker: printed before any plugin machinery runs, so the log
+// distinguishes "the browser executed this file" from "the module was never
+// served". It is the first thing to grep for when the menu still shows workers.
+try {
+  console.info('[role-chain] client bundle 已加载（dsh-role-chain-protocol）')
+} catch {
+  // A console that refuses messages must not break the menu.
+}
 
 function filterRoster(result) {
   try {
@@ -76,14 +90,18 @@ window.__ModuleLoader__.load({
 
     const namespaceOf = (ctx) => {
       try {
-        return ctx?.remote?.agentPresets ?? ctx?.get?.('remote.agentPresets')
+        return ctx?.get?.('remote.agentPresets') ?? ctx?.remote?.agentPresets
       } catch {
         return undefined
       }
     }
 
     return {
-      inject: ['remote'],
+      // No hard service dependency: an inject that never resolves leaves the
+      // fiber pending with no log line, which is indistinguishable from "the
+      // module never loaded". Poll for the namespace instead and say what
+      // happened either way.
+      inject: [],
       apply(ctx) {
         let tries = 0
         let timer
@@ -94,10 +112,14 @@ window.__ModuleLoader__.load({
           return true
         }
         if (settle()) return
+        note('等待 remote.agentPresets 挂载…')
         // The namespace mounts asynchronously, after the modules that request it.
         timer = setInterval(() => {
           tries += 1
-          if (settle() || tries >= 100) clearInterval(timer)
+          if (settle() || tries >= 100) {
+            if (tries >= 100) note('未等到 remote.agentPresets，菜单过滤未安装')
+            clearInterval(timer)
+          }
         }, 200)
         ctx.effect(() => () => clearInterval(timer))
       },
