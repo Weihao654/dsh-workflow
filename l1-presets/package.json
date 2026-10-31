@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-role-chain-presets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "plan / work / code / review agent presets for the six-step role chain, config only",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

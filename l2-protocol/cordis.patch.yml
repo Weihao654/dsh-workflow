@@ -1,0 +1,12 @@
+# Role-chain protocol (L2): one global row owning the round state machine.
+#
+# It registers nine chain_* tools and derives the caller's role from the frozen
+# preset revision + session header on every call. No service is provided, so a
+# second copy cannot open the same state twice.
+#
+# Round state lives in <cwd>/.dsh/rounds/ (state.json + one export per closed
+# round). That file is both the authoritative copy and the audit artifact.
+
+- insert:
+    - id: role-chain-protocol
+      name: '@local/dsh-role-chain-protocol'

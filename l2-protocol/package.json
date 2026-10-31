@@ -1,0 +1,18 @@
+{
+  "name": "@local/dsh-role-chain-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Turns the plan→work→code→work→review→work→plan role chain into an auditable round state machine: a single frozen T0, signature-counted failures, layered evidence, blocking gates, and a structured closeout.",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": ["deepseek-harness", "dsh", "cordis", "plugin", "workflow", "round", "audit", "subagent", "role-chain"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
