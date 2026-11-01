@@ -142,6 +142,40 @@ async function main() {
     check('no webServer is inert, not a crash', bare.registered === false)
     check('inert dispose is callable', typeof bare.dispose === 'function')
     bare.dispose()
+
+    // The regression that shipped once: Cordis throws `cannot get property
+    // "webServer" without inject` on the PROPERTY, which used to abort the whole
+    // plugin fiber. Reading it defensively must fall back to ctx.get().
+    const throwing = {
+      get webServer() {
+        throw new Error('cannot get property "webServer" without inject')
+      },
+      get(name) {
+        if (name !== 'webServer') return undefined
+        return {
+          register(route) {
+            return () => {
+              void route
+            }
+          },
+        }
+      },
+    }
+    const rescued = registerApi(throwing, {})
+    check('a throwing webServer property is survivable', rescued.registered === true)
+    rescued.dispose()
+
+    const hostile = {
+      get webServer() {
+        throw new Error('cannot get property "webServer" without inject')
+      },
+      get() {
+        throw new Error('no such service')
+      },
+    }
+    const inert = registerApi(hostile, {})
+    check('both lookups failing is inert, not a throw', inert.registered === false)
+    inert.dispose()
   }
 
   section('resolveCwd')

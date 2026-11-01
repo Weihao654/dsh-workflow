@@ -168,7 +168,7 @@ lib/client.js             # 客户端半身：过滤新建菜单 + 「角色 →
 role-chain.example.json   # 角色→模型表的样子
 test/smoke.mjs            # 无宿主自测：21 条断言，node test/smoke.mjs
 test/routes.mjs           # 路由自测：58 条断言，node test/routes.mjs
-test/api.mjs              # 设置页 API 自测：34 条断言，node test/api.mjs
+test/api.mjs              # 设置页 API 自测：36 条断言，node test/api.mjs
 DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由 + §17/§18 界面
 ACCEPTANCE.md             # 30 秒验收清单
 ```

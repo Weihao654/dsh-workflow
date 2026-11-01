@@ -11,9 +11,11 @@
 | 1 | 源文件语法（7 个） | `node --check lib/*.js` | 全部 ok |
 | 2 | 状态机全流程 | `node test/smoke.mjs` | **21 passed, 0 failed** |
 | 3 | 角色→模型路由 + 改表工具 + 写前校验 | `node test/routes.mjs` | **58 passed, 0 failed** |
-| 4 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
-| 5 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
-| 6 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 9 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
+| 4 | 设置页 API（含 webServer 缺注入的回归） | `node test/api.mjs` | **36 passed, 0 failed** |
+| 5 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
+| 6 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
+| 7 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 10 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
+| 8 | 设置页 API 真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 设置页 API /role-chain/api/table` |
 
 自测覆盖的 8 组（`test/smoke.mjs`）：
 

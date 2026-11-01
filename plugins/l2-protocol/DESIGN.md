@@ -562,5 +562,6 @@ B 的最小可行形态（约 150 行客户端 + 30 行宿主）：
 
 ### 18.4 已验证 / 待验证
 
-- 已验证：`test/api.mjs` **34 passed**（注册/注销、惰性降级、cwd 解析、GET 回显与坏文件、POST 的 403/400/200/409、拒写不动文件、`skipValidation`、单改 `enabled`、`clear`、405）。
+- 已验证：`test/api.mjs` **36 passed**（注册/注销、惰性降级、cwd 解析、GET 回显与坏文件、POST 的 403/400/200/409、拒写不动文件、`skipValidation`、单改 `enabled`、`clear`、405；另有两条回归：`webServer` 属性抛错时仍由 `ctx.get` 兜住、两次查询都失败时是惰性而不是抛错）。
 - 待验证（需重启后在真实页面）：`settings.section` 这一节是否出现在设置左栏、四个下拉是否随 provider 联动、保存后文件是否更新。
+- 已踩：`ctx.webServer` 是属性访问，未在 `inject` 里声明就抛 `cannot get property "webServer" without inject`，会把整个插件 fiber 弄失败——所以 API 必须用 `ctx.inject(['webServer'], …)` 拿到子上下文再注册。
