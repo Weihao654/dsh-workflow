@@ -35,7 +35,7 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 - **模型敷衍**：它把"没证据就关不了轮"变成硬约束，但不能让证据本身变真。
 - **work 的只读是软的**：work 这个人设里有 shell，重定向照样能写文件（L1 遗留，见 §已知缺口）。
 
-## 十个工具
+## 十二个工具
 
 | 工具 | 谁能调 | 干什么 |
 |---|---|---|
@@ -46,9 +46,40 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 | `chain_record_evidence` | 全部（分层限权） | 记一条证据，自动绑 T0 |
 | `chain_gate` | 根角色 | 阻塞式问人，决策入库；子代理只得到 `ESCALATE_TO_PARENT` |
 | `chain_close_round` | plan | 六项校验后关闭，产出结论与审计副本 |
-| `chain_status` | 全部 | 只读看板：当前轮、T0、预算与计数、失败签名、证据、门禁 |
+| `chain_status` | 全部 | 只读看板：当前轮、T0、预算与计数、失败签名、证据、门禁、角色名册 |
 | `chain_export_audit` | plan | 把整轮导出成 `.dsh/rounds/<roundId>.json` |
 | `chain_role_models` | 全部（改表限根会话） | 读 / 改「角色→模型」表，写进项目的 `.dsh/role-chain.json`；`listModels` 列可选模型，写前默认校验 |
+| `chain_dispatch` | plan / work | 把任务交给一个角色，按 reuse 策略**复用**已有子代理或新建；返回值里 `action` 说明走的是 spawn 还是 reuse |
+| `chain_release` | plan / work | 释放名册里的子代理（常驻的 work、按族的 code）；只有派发它的会话能释放 |
+
+## 角色复用（不必每个任务都新建代理）
+
+默认策略按角色的性质分三种：
+
+| 策略 | 含义 | 默认给谁 |
+|---|---|---|
+| `persistent` | 这个角色只有一个子代理，跨轮复用 | work |
+| `family` | 每个任务族（`family` 参数）一个，同类复用、异类新建 | code |
+| `fresh` | 每次新建 | review（独立审核不该继承上一轮的结论） |
+
+写进同一个项目的 `.dsh/role-chain.json`：
+
+```json
+{ "reuse": { "work": "persistent", "code": "family", "review": "fresh" } }
+```
+
+派发走 `chain_dispatch`（复用时是给同一个子代理**发一条新消息**，它会接着上次的上下文干，不重建）：
+
+```
+chain_dispatch({ role: "work", task: "实现登录" })            // 第一次：action = "spawn"
+chain_dispatch({ role: "work", task: "补测试" })             // 第二次：action = "reuse"
+chain_dispatch({ role: "code", task: "写登录接口", family: "auth" })
+chain_dispatch({ role: "code", task: "写设置页", family: "ui" })  // 不同族 → 新代理
+chain_dispatch({ role: "review", task: "审这一轮", fresh: true }) // 无视策略，强制新建
+chain_release({ role: "work" })                               // 退休并释放
+```
+
+边界（都是有意为之）：只有派发它的那个会话能复用 / 释放它——子代理的父子邻接是运行期事实，不是名册里的一行字；因此**换了新的 plan 会话，旧名册条目会自动失效并回退成新建**，不会报错。`chain_status.agents` 能看当前名册。
 
 ## 角色→模型（plan 用强模型，code 用便宜模型）
 
@@ -157,19 +188,21 @@ chain_role_models({})                         // 只看现在是什么
 ```
 package.json              # dsh-role-chain-protocol 0.1.0, dsh.bundle.patch, dsh.client
 cordis.patch.yml          # 1 个全局行 role-chain-protocol
-lib/index.js              # 插件入口：inject ['tools']，注册 10 个工具 + agent/request 路由 + 设置页 API
+lib/index.js              # 插件入口：inject ['tools']，注册 12 个工具 + agent/request 路由 + 设置页 API
 lib/roles.js              # 角色判定：SessionHeader.agentPreset / composedPreset / 是否根 / cwd
 lib/service.js            # 状态机全部逻辑（开轮/T0/计数/证据/门禁/关闭/看板）
 lib/store.js              # 原子 JSON 状态存储，按 cwd 单实例
-lib/tools.js              # 10 个工具定义 + 角色拒绝 + chain_status 回显模型映射
+lib/tools.js              # 12 个工具定义 + 角色拒绝 + chain_status 回显模型映射与名册
 lib/role-models.js        # 角色→模型：读 .dsh/role-chain.json，agent/request 瀑布换模型，手选优先
+lib/dispatch.js           # 角色复用：subagents.startActivation / sendMessage，名册与 reuse 策略
 lib/api.js                # 设置页用的 HTTP 接口：GET/POST /role-chain/api/table
 lib/client.js             # 客户端半身：过滤新建菜单 + 「角色 → 模型」设置卡片
 role-chain.example.json   # 角色→模型表的样子
 test/smoke.mjs            # 无宿主自测：21 条断言，node test/smoke.mjs
 test/routes.mjs           # 路由自测：58 条断言，node test/routes.mjs
 test/api.mjs              # 设置页 API 自测：38 条断言，node test/api.mjs
-DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由 + §17/§18 界面
+test/dispatch.mjs         # 角色复用自测：51 条断言，node test/dispatch.mjs
+DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由 + §17/§18 界面 + §19 复用
 ACCEPTANCE.md             # 30 秒验收清单
 ```
 

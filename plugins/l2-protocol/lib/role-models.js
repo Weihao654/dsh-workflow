@@ -17,6 +17,7 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROLES } from './roles.js'
+import { normalizeReuse, policyFor } from './dispatch.js'
 
 export const CONFIG_DIR = '.dsh'
 export const CONFIG_FILE = 'role-chain.json'
@@ -77,7 +78,7 @@ export function loadRoutes(cwd) {
     stamp = `${stat.mtimeMs}:${stat.size}`
   } catch {
     cache.delete(path)
-    return { path, exists: false, enabled: false, roleModels: {}, errors: [] }
+    return { path, exists: false, enabled: false, roleModels: {}, reuse: {}, errors: [] }
   }
 
   const hit = cache.get(path)
@@ -87,13 +88,15 @@ export function loadRoutes(cwd) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
     const { roleModels, errors } = normalizeRoleModels(parsed?.roleModels ?? parsed)
-    value = { path, exists: true, enabled: parsed?.enabled !== false, roleModels, errors }
+    const { reuse, errors: reuseErrors } = normalizeReuse(parsed?.reuse)
+    value = { path, exists: true, enabled: parsed?.enabled !== false, roleModels, reuse, errors: [...errors, ...reuseErrors] }
   } catch (error) {
     value = {
       path,
       exists: true,
       enabled: false,
       roleModels: {},
+      reuse: {},
       errors: [`解析失败：${error.message}`],
     }
   }
@@ -124,6 +127,18 @@ export function saveRoleModels(cwd, change = {}) {
   const errors = []
 
   if (typeof change.enabled === 'boolean') document.enabled = change.enabled
+
+  // reuse: merge per role, so switching code to "persistent" does not silently
+  // reset work's policy. A null value removes that role's override.
+  if (change.reuse !== undefined) {
+    const { reuse, errors: reuseErrors } = normalizeReuse(change.reuse)
+    errors.push(...reuseErrors)
+    if (!document.reuse || typeof document.reuse !== 'object') document.reuse = {}
+    for (const [role, policy] of Object.entries(reuse)) document.reuse[role] = policy
+    for (const [role, value] of Object.entries(change.reuse ?? {})) {
+      if (value === null) delete document.reuse[String(role).trim().toLowerCase()]
+    }
+  }
 
   for (const key of Array.isArray(change.clear) ? change.clear : []) {
     const role = String(key).trim().toLowerCase()
@@ -160,6 +175,12 @@ export function saveRoleModels(cwd, change = {}) {
   if (invalid.length > 0) return { ok: false, path, errors: invalid }
 
   const payload = { enabled: document.enabled !== false, roleModels }
+  const keptReuse = {}
+  for (const role of ['work', 'code', 'review']) {
+    const policy = document.reuse?.[role]
+    if (typeof policy === 'string' && policy) keptReuse[role] = policy
+  }
+  if (Object.keys(keptReuse).length > 0) payload.reuse = keptReuse
   const directory = join(cwd || '.', CONFIG_DIR)
   const temp = `${path}.tmp`
   try {
@@ -334,11 +355,15 @@ export function installRouting(ctx) {
 export function describeRoutes(ctx, exec, tracker) {
   const table = loadRoutes(exec?.cwd ?? safeCwd())
   const applied = tracker?.appliedRoute?.(exec?.sessionId) ?? null
+  const effectiveReuse = {}
+  for (const role of ['work', 'code', 'review']) effectiveReuse[role] = policyFor(table.reuse, role)
   return {
     configPath: table.path,
     exists: table.exists,
     enabled: table.enabled,
     roles: table.roleModels,
+    reuse: table.reuse,
+    effectiveReuse,
     errors: table.errors,
     thisSession: {
       role: exec?.role ?? null,

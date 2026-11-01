@@ -62,6 +62,16 @@ plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 
 装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。这条靠客户端过滤实现，自检步骤见 `plugins/l2-protocol/ACCEPTANCE.md` 第 5 步。
 
+## 角色复用（不必每个任务都新建代理）
+
+同一个项目里，`chain_dispatch` 会按策略**复用**已有子代理，而不是每个任务都新开一个：
+
+```json
+{ "reuse": { "work": "persistent", "code": "family", "review": "fresh" } }
+```
+
+`work` 跨轮常驻；`code` 按任务族（`family` 参数）一类一个；`review` 每轮新开——独立审核不该继承上一轮的结论。复用时是把新任务**发给同一个子代理**（它接着原来的上下文干），返回的 `action` 会写明 `spawn` 还是 `reuse`；`chain_status.agents` 是当前名册，`chain_release` 退休并释放。换新的 plan 会话后旧名册自动失效、回退新建，不会报错。
+
 ## 一眼看懂差别
 
 不装 L2 时，"这一轮只有一个 T0"是一句提示词，模型忘了就忘了；

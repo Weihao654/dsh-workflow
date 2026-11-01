@@ -1,4 +1,4 @@
-// The nine chain_* tools.
+// The twelve chain_* tools.
 //
 // Every tool re-derives the caller's role from runtime facts before doing
 // anything, so a wrong role gets a ROLE_DENIED error even though the schema is
@@ -8,7 +8,8 @@
 
 import { resolveExec } from './roles.js'
 import { forCwd } from './store.js'
-import { describeRoutes, saveRoleModels } from './role-models.js'
+import { describeRoutes, loadRoutes, saveRoleModels } from './role-models.js'
+import { dispatch, readRoster, release } from './dispatch.js'
 import * as svc from './service.js'
 
 const ALL = ['plan', 'work', 'code', 'review']
@@ -44,6 +45,9 @@ function define(ctx, spec) {
         throw new Error(`ROLE_DENIED: ${spec.name} 只给 ${spec.roles.join(' / ')}，当前角色是 ${runner.role}。`)
       }
       const store = forCwd(runner.cwd)
+      // Reuse policy rides along with the caller, so dispatch() never re-reads the
+      // file and a policy edit applies to the next handoff, not the next restart.
+      runner.reuse = loadRoutes(runner.cwd).reuse
       return spec.run({ ctx, store, exec: runner, args: args ?? {} })
     },
   }
@@ -211,14 +215,52 @@ export function registerTools(ctx, options = {}) {
   })
 
   push({
+    name: 'chain_dispatch',
+    description:
+      '把任务交给一个角色，并按 reuse 策略决定复用已有子代理还是新建。plan 可派 work；work 可派 code / review。复用是真复用：同一个子代理会话继续，不重建上下文、不重复传授背景。返回值里的 action 是 spawn 还是 reuse。',
+    roles: ['plan', 'work'],
+    parameters: {
+      type: 'object',
+      properties: {
+        role: { type: 'string', enum: ['work', 'code', 'review'], description: '交给哪个角色。' },
+        task: { type: 'string', description: '任务说明。复用时会作为一条新消息发给该角色已有的子代理。' },
+        family: {
+          type: 'string',
+          description: '可选：任务族（只对 code 有意义）。同一个 family 复用同一个 code 子代理，不同 family 各一个。缺省 default。',
+        },
+        fresh: { type: 'boolean', description: '可选：强制新建，无视 reuse 策略（review 的独立审核通常这样用）。' },
+        maxDepth: { type: 'number', description: '可选：派发深度上限，默认 2（plan→work→code）。' },
+      },
+      required: ['role', 'task'],
+    },
+    run: ({ ctx, store, exec, args }) => dispatch(ctx, store, exec, args),
+  })
+
+  push({
+    name: 'chain_release',
+    description:
+      '释放并移除名册里的子代理（常驻的 work、按族的 code）。只有派发它的那个会话能释放。省略 role 表示全部释放。释放后下次派发会新建。',
+    roles: ['plan', 'work'],
+    parameters: {
+      type: 'object',
+      properties: {
+        role: { type: 'string', enum: ['work', 'code', 'review'], description: '可选：释放哪个角色。省略表示全部。' },
+        family: { type: 'string', description: '可选：只释放这个任务族的 code 子代理。' },
+      },
+    },
+    run: ({ ctx, store, exec, args }) => release(ctx, store, exec, args),
+  })
+
+  push({
     name: 'chain_status',
     description:
-      '只读看板：当前轮次、T0、预算与计数、失败签名、证据与门禁，以及角色→模型映射（含本会话实际生效的那条）。',
+      '只读看板：当前轮次、T0、预算与计数、失败签名、证据与门禁、角色名册（哪些角色有常驻子代理），以及角色→模型映射（含本会话实际生效的那条）。',
     roles: ALL,
     parameters: { type: 'object', properties: { ...ROUND_ID } },
-    run: ({ ctx, store, exec, args }) => {
+    run: async ({ ctx, store, exec, args }) => {
       const board = svc.status(store, args)
       board.roleModels = describeRoutes(ctx, exec, tracker)
+      board.agents = await readRoster(store)
       return board
     },
   })

@@ -566,3 +566,67 @@ B 的最小可行形态（约 150 行客户端 + 30 行宿主）：
 - 待验证（需重启后在真实页面）：`settings.section` 这一节是否出现在设置左栏、四个下拉是否随 provider 联动、思考深度下拉是否只列该模型接受的档位、保存后文件是否更新。
 - 已踩：`ctx.webServer` 是属性访问，未在 `inject` 里声明就抛 `cannot get property "webServer" without inject`，会把整个插件 fiber 弄失败——所以 API 必须用 `ctx.inject(['webServer'], …)` 拿到子上下文再注册。
 - 已踩：思考深度不能写死成 `['','minimal','low','medium','high']`。各模型接受的档位不同（`deepseek-flash` 是 `off/low/high/max`，没有 `minimal`），而写前校验会照实拒绝，于是"卡片里能选、保存必失败"。现在目录里每个模型都带 `efforts`，下拉只列这些值，没选模型时禁用。
+## §19 角色复用：名册与 reuse 策略（2026-11-01 追加）
+
+### 19.1 问题
+
+P0 的派发是"一个任务一个子代理"：`chain_dispatch` 之前，plan 每次要干活都得走 `dsh-tool-subagent` 的 spawn 工具，于是每一轮都要把背景、纪律、约束重新讲一遍，每个角色都不积累任何东西。链路的"团队"每轮重建一次，token 花在重复介绍上，而不是任务上。
+
+### 19.2 结论：这是记账问题，不是传输问题
+
+`subagents` 服务本来就同时具备两种原语：
+
+- `startActivation({ provider, label, request, signal, delivery })` → 新建子会话（返回 `childId`）；
+- `sendMessage(sender, targetId, content, { signal })` → 给**已有的**直接子会话发一条消息（运行中在最近的步骤边界接收；空闲则开一轮；已不在内存则从持久化冷启动）。
+
+后者正是"复用"的传输层。缺的只是一张表：哪个角色对应哪个 `childId`。所以复用写进 `lib/dispatch.js`，状态写进 `<cwd>/.dsh/rounds/state.json` 的 `agents` 字段（与轮次同一份文件、同一个 store）。
+
+### 19.3 三种策略
+
+| 策略 | 语义 | 默认 |
+|---|---|---|
+| `persistent` | 一个角色一个子代理，跨轮复用 | work |
+| `family` | 一个 (角色, 任务族) 一个；`family` 由调用方给，缺省 `default` | code |
+| `fresh` | 每次都新建 | review |
+
+给 review 默认 `fresh` 是刻意的：独立审核不该继承上一轮的结论，否则"独立"就退回成"同一双眼睛看两遍"。`chain_dispatch({ fresh: true })` 可以无视策略强制新建。
+
+策略与模型表同文件：
+
+```json
+{ "enabled": true, "reuse": { "work": "persistent", "code": "family", "review": "fresh" } }
+```
+
+`normalizeReuse()` 对未知角色、未知策略只报告不应用——写错一个字不会把某个角色静默改成"每轮新建"。`chain_role_models({ reuse: {...} })` 与本文件都能改，合并语义（改 code 不会重置 work）。
+
+### 19.4 名册
+
+键：`work` / `review` 是角色名；`code` 是 `code:<family>`。条目：
+
+```json
+{ "work": { "role": "work", "family": null, "childId": "...", "parentSessionId": "...",
+            "policy": "persistent", "createdAt": "...", "lastUsedAt": "...", "uses": 3,
+            "lastRoundId": "R-xxxxxxxx" } }
+```
+
+`chain_status.agents` 直接回显它，所以"现在到底有几个常驻代理"是可查的，不用猜。
+
+### 19.5 两条硬边界
+
+1. **只有派发者能复用与释放。** `sendMessage` 按运行期邻接授权，`drainChildren` 对别人家的孩子返回 `UNAUTHORIZED`。名册只是提示，授权仍由宿主判定；`release` 会在调用前比对 `parentSessionId`，避免"名册里有、实际上无权"的误判。
+2. **换父会话，名册就失效。** 新开一个 plan 会话是新的 Agent，旧条目指向的是上一个父会话的子代理，派发时 `sendMessage` 会失败；实现里把它当作"复用失败"处理——**回退成新建，不报错，并覆盖名册条目**。这是有意选择的降级方向：复用是优化，不是正确性要求。
+
+### 19.6 失败回退
+
+复用路径上任何异常（子代理已回收、邻接失效、容量拒绝）都落到同一分支：记一条 `REUSE_FAILED` 的意图，然后走 `startActivation`。只有 `NO_SUBAGENTS`（服务不存在）会直接返回，因为那时新建也不可能。所以"名册过期"永远不会让一轮工作卡住。
+
+### 19.7 已验证 / 待验证
+
+- 已验证：`test/dispatch.mjs` **51 passed**（策略归一化与默认值、键规则、首次 spawn 参数、二次 reuse 走 `sendMessage` 且不新增子代理、`uses` 计数、code 按族分流、review 每次新建、`fresh:true` 覆盖策略、`DISPATCH_DENIED` 的角色矩阵、复用失败回退并重建名册、`NO_SUBAGENTS`、`release` 调 `drainChildren` 并删除条目、跨会话释放被拒、全量释放只覆盖本会话的孩子）。
+- 待验证（需真实会话）：`sendMessage` 对运行中的 code 子代理是否真的在步骤边界接收；跨轮复用的上下文增长是否比"重新派发"更省 token（这是本改动的收益假设，未经测量）；大量 code 家族时的常驻内存。
+
+### 19.8 有意不做
+
+- **不改 L1 的 persona 去禁用 `dispatch_work` / `dispatch_code` / `dispatch_review`。** 那三个是 L1 预设里的原生命名工具，L2 不该篡改上一个包的语义；正确用法是让 plan 用 `chain_dispatch`（本包 README 与 ACCEPTANCE 都这么写），旧工具仍然可用，只是不经名册。
+- **不跨父会话迁移子代理。** 那需要重写子会话的 `parentSession`，等于伪造邻接关系；宁可回退新建。
+- **不自动定期回收。** 常驻是有成本的选择，回收时机属于人的判断：`chain_release` 显式释放。

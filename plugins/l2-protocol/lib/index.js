@@ -1,4 +1,4 @@
-// Plugin entry: one global row, no services, ten tools plus the settings API.
+// Plugin entry: one global row, no services, twelve tools plus the settings API.
 //
 // Why a single global row in P0: ctx.storageDomain rejects a second open() for
 // the same domain name, so per-preset copies cannot each own state. Registering
@@ -53,7 +53,7 @@ export function apply(ctx) {
     })
   }
 
-  say(ctx, '10 个 chain_* 工具已注册；角色→模型路由已监听 agent/request')
+  say(ctx, '12 个 chain_* 工具已注册；角色→模型路由已监听 agent/request；派发按 reuse 策略复用子代理')
 
   if (typeof ctx.inject !== 'function') {
     say(ctx, '没有 ctx.inject，跳过设置页 API')
