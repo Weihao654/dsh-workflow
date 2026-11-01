@@ -139,6 +139,24 @@ window.__ModuleLoader__.load({
 
     const roleOf = (roles, role) => roles?.[role] ?? { provider: '', model: '', reasoningEffort: '' }
 
+    /** JSON or null; never throws, so a stray HTML body cannot mask the real status. */
+    const parseJson = (text) => {
+      if (typeof text !== 'string' || text.trim() === '') return null
+      try {
+        return JSON.parse(text)
+      } catch {
+        return null
+      }
+    }
+
+    /** A short, single-line peek at a non-JSON body, for the error line. */
+    const bodyHint = (text) => {
+      const body = String(text ?? '').trim()
+      if (body === '') return '（空响应）'
+      const head = body.slice(0, 120).replace(/\s+/g, ' ')
+      return `（响应不是 JSON：${head}${body.length > 120 ? '…' : ''}）`
+    }
+
     function Card() {
       const [data, setData] = React.useState(null)
       const [draft, setDraft] = React.useState({})
@@ -166,8 +184,14 @@ window.__ModuleLoader__.load({
         setMessage('')
         try {
           const response = await fetch(API, { headers: { accept: 'application/json' } })
-          const payload = await response.json()
-          if (!response.ok || payload?.ok === false) {
+          const text = await response.text()
+          const payload = parseJson(text)
+          if (payload === null) {
+            // An HTML or empty body means the route is not ours (404 from the
+            // static fallback, or a proxy page). Say that plainly instead of
+            // surfacing a JSON.parse complaint.
+            setMessage(`读取失败：HTTP ${response.status}${bodyHint(text)}`)
+          } else if (!response.ok || payload?.ok === false) {
             setMessage(`读取失败：${(payload?.errors ?? [response.statusText]).join('；')}`)
           } else {
             absorb(payload)
@@ -216,8 +240,10 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json', 'x-role-chain': '1' },
             body: JSON.stringify({ cwd: data?.cwd, set, enabled }),
           })
-          const payload = await response.json()
-          if (!response.ok || payload?.ok === false) {
+          const payload = parseJson(await response.text())
+          if (payload === null) {
+            setMessage(`写入失败：HTTP ${response.status}（响应不是 JSON，路由可能没注册）`)
+          } else if (!response.ok || payload?.ok === false) {
             setMessage(`写入被拒：${(payload?.errors ?? [response.statusText]).join('；')}`)
           } else {
             setMessage(`已写入 ${payload.path}`)

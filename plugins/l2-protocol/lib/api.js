@@ -119,11 +119,32 @@ async function modelCatalog(ctx) {
 }
 
 /**
+ * The web server, if this composition has one. Property access to a service the
+ * fiber does not inject THROWS (`cannot get property "webServer" without
+ * inject`), so every path here is defensive: when the host half registers this
+ * through `ctx.inject(['webServer'], …)` the property is legal; anywhere else
+ * the call degrades to "no server" instead of failing the plugin.
+ */
+function serverOf(ctx) {
+  try {
+    const viaProperty = ctx.webServer
+    if (viaProperty) return viaProperty
+  } catch {
+    // not injected here — fall through to the lookup below
+  }
+  try {
+    return ctx.get?.('webServer')
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Register the table API. Absent a webServer (host-free tests, `dsh` without the
  * web page) this is inert, never a crash.
  */
 export function registerApi(ctx, state = {}) {
-  const server = ctx.get?.('webServer') ?? ctx.webServer
+  const server = serverOf(ctx)
   if (!server || typeof server.register !== 'function') {
     return { registered: false, path: API_PATH, dispose() {} }
   }
