@@ -534,3 +534,33 @@ B 的最小可行形态（约 150 行客户端 + 30 行宿主）：
 `dsh.client` 的 bundle 是**普通脚本**，会被求值两次；任何顶层 `const` / `let` 第二次就抛 `SyntaxError: Identifier '…' has already been declared`，整个客户端半身当场失效——而且**只在渲染器日志里**留一行，宿主日志看起来一切正常。所以：客户端文件里除 `window.__ModuleLoader__.load({...})` 这一次调用外，不要有任何顶层声明，全部塞进 `factory`。
 
 同时记下：`dsh.client.inject` 写的是**模块图上的包名**，写错不会报错，只是这个模块永远不出现；不需要别的模块时写 `[]` 最稳。
+
+---
+
+## §18 设置页卡片：为什么走 HTTP 而不是 Remote 网关（2026-11-01 追加）
+
+### 18.1 结论
+
+设置卡片用 `webServer.register` 开一条同源 HTTP 路由（`GET/POST /role-chain/api/table`），客户端 `fetch` 它。**不**去实现 Typert Remote 命名空间。
+
+### 18.2 为什么不走 Remote 网关
+
+网关只暴露"自带 `typertRemote` 绑定 + 原型上有 Remote 方法描述符"的服务，而那两个东西是编译器产物：
+
+- `TypertRemoteService` 的构造器里 `this.typertRemote = bindTypertRemote(this, this.name, options)`；网关遍历 `ctx.reflect.props` 取服务，读 `typertRemote.namespace`，再读原型上 `@deepseek-ai/dsh-typert-protocol/remote-methods` 这个字符串键下的 `{ version: 1, methods: [{ method, exportName, invocation: { kind: 'direct' } }] }` 描述符。
+- 描述符可以手写（键是普通字符串常量），但方法标记来自 Stage-3 装饰器 `Remote('name')`，非编译产物要把 `context.addInitializer` 手工模拟一遍；任何一处漏掉的表现都是**静默不可调用**，只能靠重启一轮轮试。
+- 实测本机四个第三方插件（`dshmarket`、`dsh-context`、`billion-context`、`@liustack/modlens`）**没有一个**自带 Remote 命名空间，说明这不是第三方插件的常规路径。
+
+`webServer.register({ kind: 'exact', path, handler })` 是普通路由表（重复 `(kind,path)` 才抛），`dshmarket` 的整套 API 就是这么挂的，是第三方插件既有的做法。
+
+### 18.3 权限与边界
+
+- 写必须带 `x-role-chain: 1` 请求头：跨站页面带不上自定义头（除非过 CORS 预检），挡住"借 loopback 写文件"的顺手攻击。
+- 路径由宿主决定：`?cwd=` 为空时取**最近一个会话的 cwd**，其次是 `workingDirectory.defaultDirectory`，最后 `process.cwd()`。客户端不能任意指向别的目录。
+- 写路径复用的就是 `sortRoleModels` 那一层：`validateRoutes`（写前校验）→ `saveRoleModels`（原子写 + 未知键保留 + 缓存失效），与 `chain_role_models` 工具完全同一条，符合"一个操作两个调用方"。
+- 没有 `webServer`（`dsh` 无网页、无宿主自测）时 `registerApi` 返回惰性句柄，不抛、不挂。
+
+### 18.4 已验证 / 待验证
+
+- 已验证：`test/api.mjs` **34 passed**（注册/注销、惰性降级、cwd 解析、GET 回显与坏文件、POST 的 403/400/200/409、拒写不动文件、`skipValidation`、单改 `enabled`、`clear`、405）。
+- 待验证（需重启后在真实页面）：`settings.section` 这一节是否出现在设置左栏、四个下拉是否随 provider 联动、保存后文件是否更新。

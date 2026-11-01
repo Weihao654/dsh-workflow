@@ -95,7 +95,12 @@ chain_role_models({})                         // 只看现在是什么
 
 **二、直接编辑 `<项目根>/.dsh/role-chain.json`** —— 编辑器、git、脚本都行，见上面的字段说明。
 
-> 想要图形界面（DSH 设置里点选角色 + 模型 + 思考强度）还没做：数据层与工具已经就位，UI 需要一次客户端改造并重启验证。见 `DESIGN.md` §17。
+**三、在设置里点选** —— DSH 设置 → **角色 → 模型**：四行（plan / work / code / review）× 三个下拉（provider / 模型 / 思考深度）+ 一个「启用这张表」开关，保存即写同一个文件。
+
+- 卡片读的是**最近一个会话所在的项目**（表是跟项目的）；想改别的项目，用 `/role-chain/api/table?cwd=<项目根>` 读一次即可让卡片记下那个路径。
+- 写走同一个 `saveRoleModels()`，也过同一道 `llm.resolveModelInfo` 校验：模型 id 写错会当场被拒并显示原因，不会把表写坏。
+- 这张卡是客户端半身 + 一条 host 路由（`GET/POST /role-chain/api/table`，写要带 `x-role-chain: 1` 头，防跨站页面借 loopback 写文件），不依赖 Remote 网关。
+- 改了客户端半身必须**重启 DSH** 才生效（客户端模块在启动时装配）。
 
 机制是一行宿主监听：`agent/request` 瀑布（每步请求前）读 `session.header.agentPreset` 认出角色，查表替换 `provider` / `model`。所以它不依赖 preset、不依赖 YAML，也不需要重装。
 
@@ -152,17 +157,19 @@ chain_role_models({})                         // 只看现在是什么
 ```
 package.json              # dsh-role-chain-protocol 0.1.0, dsh.bundle.patch, dsh.client
 cordis.patch.yml          # 1 个全局行 role-chain-protocol
-lib/index.js              # 插件入口：inject ['tools']，注册 9 个工具 + 装 agent/request 路由
+lib/index.js              # 插件入口：inject ['tools']，注册 10 个工具 + agent/request 路由 + 设置页 API
 lib/roles.js              # 角色判定：SessionHeader.agentPreset / composedPreset / 是否根 / cwd
 lib/service.js            # 状态机全部逻辑（开轮/T0/计数/证据/门禁/关闭/看板）
 lib/store.js              # 原子 JSON 状态存储，按 cwd 单实例
-lib/tools.js              # 9 个工具定义 + 角色拒绝 + chain_status 回显模型映射
+lib/tools.js              # 10 个工具定义 + 角色拒绝 + chain_status 回显模型映射
 lib/role-models.js        # 角色→模型：读 .dsh/role-chain.json，agent/request 瀑布换模型，手选优先
-lib/client.js             # 客户端半身：把 work/code/review 从新建菜单里过滤掉
+lib/api.js                # 设置页用的 HTTP 接口：GET/POST /role-chain/api/table
+lib/client.js             # 客户端半身：过滤新建菜单 + 「角色 → 模型」设置卡片
 role-chain.example.json   # 角色→模型表的样子
 test/smoke.mjs            # 无宿主自测：21 条断言，node test/smoke.mjs
-test/routes.mjs           # 路由自测：34 条断言，node test/routes.mjs
-DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由
+test/routes.mjs           # 路由自测：58 条断言，node test/routes.mjs
+test/api.mjs              # 设置页 API 自测：34 条断言，node test/api.mjs
+DESIGN.md                 # 接口骨架 + §15 实施记录 + §16 模型路由 + §17/§18 界面
 ACCEPTANCE.md             # 30 秒验收清单
 ```
 

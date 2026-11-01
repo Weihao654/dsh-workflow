@@ -89,7 +89,19 @@ chain_gate(kind: "accept", question: "门禁测试：这条链路能继续吗？
 
 > 若第 5 步菜单里仍然出现 work/code/review，说明客户端过滤没装上（失败开放）。这不会影响功能，只是回到装之前的样子；把菜单截图给我，我改包装点。
 
-### 第 6 步：一轮完整跑通（可选，5 分钟）
+### 第 6 步：设置里的「角色 → 模型」卡片（新增，约 1 分钟）
+
+重启 DSH 后打开 设置 →（左侧）**角色 → 模型**：
+
+- [ ] 看到四行（plan / work / code / review），每行三个下拉：provider / 模型 / 思考深度；顶部写着写到哪（`.dsh\role-chain.json` 的绝对路径）
+- [ ] provider 下拉里是本机配置的 provider（`deepseek-official` / `deepseek-account` / `openai` / 两个 modlens）；模型下拉随 provider 变
+- [ ] 改一个角色（例如 review 选 `deepseek-account` + `deepseek-v4-pro`）→ 保存 → 提示"已写入 …"；打开那个文件，`roleModels.review` 已更新
+- [ ] 故意选一个不存在的模型（若下拉里没有，用 `chain_role_models({ set: { review: { provider: "deepseek-account", model: "typo" } } })`）→ 保存被拒并显示 `ROUTE_UNKNOWN` 原因，文件没被改坏
+- [ ] 取消「启用这张表」→ 保存 → 文件里 `"enabled": false`
+
+> 若设置里没有这张卡：看 `C:\Users\Weihao Chen\.dsh\logs\desktop-next.log` 里有没有 `[role-chain] 设置页已注册「角色 → 模型」卡片`（渲染进程的 console 会进这个文件）。没有那行说明客户端半身没加载；有那行但没卡片，多半是 `settings.section` 的注册参数不对，把 log 里那几行给我。
+
+### 第 7 步：一轮完整跑通（可选，5 分钟）
 
 plan 会话里让它按顺序来：`chain_open_round` → 派 work 会话 `chain_freeze_baseline` → code 写一条 `chain_record_evidence layer=command` → review 写一条 `layer=review` → `chain_close_round`。
 
@@ -101,7 +113,7 @@ plan 会话里让它按顺序来：`chain_open_round` → 派 work 会话 `chain
 ## 三、判定标准
 
 - 第 1、2、3 步全绿 → **P0 验收通过**（工具可见性符合 P0 设计，门禁为人机交替可用）。
-- 第 4、5 步是新加的两条（角色→模型、新建菜单过滤），它们失败不影响 P0 状态机：路由失败只是模型没换；菜单过滤失败只是多显示三个选项。
+- 第 4、5、6 步是新加的三条（角色→模型路由、新建菜单过滤、设置卡片），它们失败不影响 P0 状态机：路由失败只是模型没换；菜单过滤失败只是多显示三个选项；卡片失败只是回到手改文件。
 - 第 1 步发现 plan 会话能看见 `write` → L1 的 preset 工具矩阵没生效，要先修 L1。
 - 第 3 步弹不出卡片或一直等到超时 → `userQuestions.ask` 的请求形状要按真实契约修正（`lib/service.js` 的 `askGate`），这是唯一预期需要回改的地方。
 - 第 4 步关闭被拒 → 看错误里的 `problems` 列表，它就是六项校验的缺口清单。
