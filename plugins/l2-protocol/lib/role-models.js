@@ -174,6 +174,10 @@ export function saveRoleModels(cwd, change = {}) {
   return { ok: true, path, document: payload, errors: [] }
 }
 
+function sameRoute(a, b) {
+  return Boolean(a && b) && a.provider === b.provider && a.model === b.model
+}
+
 /**
  * Decide what to actually send. Pure: no I/O, so the precedence rules are
  * testable without a harness.
@@ -181,8 +185,10 @@ export function saveRoleModels(cwd, change = {}) {
  * Rules, in order:
  *  1. a base config that differs from the last one we applied means the human
  *     picked something — that session is theirs from now on;
- *  2. no route for the role, no override;
- *  3. otherwise replay the route, dropping a stale reasoningEffort whenever the
+ *  2. a root session whose very first base is neither the profile default nor
+ *     the table's route was already picked by the human before we ran;
+ *  3. no route for the role, no override;
+ *  4. otherwise replay the route, dropping a stale reasoningEffort whenever the
  *     model actually changes (effort ids are model-specific).
  */
 export class RouteTracker {
@@ -199,11 +205,23 @@ export class RouteTracker {
     return this.applied.get(String(sessionId)) ?? null
   }
 
-  decide(sessionId, base, route) {
+  decide(sessionId, base, route, options = {}) {
     const id = String(sessionId)
     const prev = this.applied.get(id)
 
     if (prev && (base.provider !== prev.provider || base.model !== prev.model)) {
+      this.manual.add(id)
+    }
+    // First sight of a root session: a base that is neither the profile default
+    // nor the table's route is a picker choice the human made before we ever ran,
+    // so the session is already theirs.
+    if (
+      !prev &&
+      options.isRoot === true &&
+      options.defaults &&
+      !sameRoute(base, options.defaults) &&
+      !sameRoute(base, route)
+    ) {
       this.manual.add(id)
     }
     if (this.manual.has(id)) return null
@@ -239,6 +257,20 @@ function safeCwd() {
   }
 }
 
+/** The profile's default route, i.e. what a brand-new session sends before any pick. */
+function defaultSelection(ctx) {
+  try {
+    const service = ctx.get?.('agentDefaultModel') ?? ctx.agentDefaultModel
+    const current = service?.currentSelection?.()
+    if (current && typeof current.provider === 'string' && typeof current.model === 'string') {
+      return { provider: current.provider, model: current.model }
+    }
+  } catch {
+    // No default-model service: fall back to "cannot tell", which keeps rule 2 inert.
+  }
+  return null
+}
+
 /**
  * Install the `agent/request` listener. Returns a disposer and the tracker, so
  * callers (and chain_status) can read what a session is actually sending.
@@ -261,7 +293,10 @@ export function installRouting(ctx) {
       if (!table.exists || !table.enabled) return base
 
       const route = table.roleModels[preset]
-      const decided = tracker.decide(sessionId, base, route)
+      const decided = tracker.decide(sessionId, base, route, {
+        isRoot: !header?.parentSession && header?.origin !== 'subagent',
+        defaults: defaultSelection(ctx),
+      })
       if (!decided) return base
 
       const key = `${sessionId}:${preset}:${route.provider}/${route.model}`

@@ -234,7 +234,7 @@ export function registerTools(ctx, options = {}) {
   push({
     name: 'chain_role_models',
     description:
-      '读或改本项目的「角色→模型」表（写入 <cwd>/.dsh/role-chain.json，下一轮请求即生效，无需重启）。改模型只能由根会话（plan）发起；子代理请把请求带回 plan。',
+      '读或改本项目的「角色→模型」表（写入 <cwd>/.dsh/role-chain.json，下一轮请求即生效，无需重启）。带 listModels:true 可先列出可选模型。改模型只能由根会话（plan）发起；子代理请把请求带回 plan。',
     roles: ALL,
     parameters: {
       type: 'object',
@@ -254,9 +254,43 @@ export function registerTools(ctx, options = {}) {
         },
         clear: { type: 'array', items: { type: 'string' }, description: '要删除的角色，例如 ["review"]。' },
         enabled: { type: 'boolean', description: '可选：整体开关。false 时路由暂停，表保留。' },
+        listModels: {
+          type: 'boolean',
+          description: '可选：只读，列出当前可选的 provider 与其模型 id（与界面模型选择器同源）。写表前不知道该填什么时先调这个。',
+        },
       },
     },
-    run: ({ ctx, exec, args }) => {
+    run: async ({ ctx, exec, args }) => {
+      if (args.listModels) {
+        const llm = ctx.get?.('llm') ?? ctx.llm
+        if (!llm) return { ok: false, error: 'llm 服务不可用，读不到模型清单' }
+        try {
+          const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : []
+          const out = []
+          for (const provider of providers) {
+            let models = []
+            try {
+              models = await llm.listModels(provider.id)
+            } catch (error) {
+              out.push({ provider: provider.id, name: provider.name, error: error.message, models: [] })
+              continue
+            }
+            out.push({
+              provider: provider.id,
+              name: provider.name,
+              models: models.map((model) => ({ id: model.id, name: model.name })),
+            })
+          }
+          return {
+            ok: true,
+            providers: out,
+            note: '把这些 id 填进 set 就能用；写错了不会自动降级，调用会直接失败。',
+            effective: describeRoutes(ctx, exec, tracker),
+          }
+        } catch (error) {
+          return { ok: false, error: error.message }
+        }
+      }
       const writes = Boolean(args.set || args.clear || typeof args.enabled === 'boolean')
       if (writes && !exec.isRoot) {
         return {

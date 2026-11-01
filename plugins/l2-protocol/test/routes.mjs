@@ -128,6 +128,33 @@ section('RouteTracker')
   check('sets the route effort', kept.reasoningEffort === 'low')
 }
 
+section('RouteTracker · picker choices made before the first request')
+{
+  const defaults = { provider: 'default', model: 'std' }
+  const route = { provider: 'strong', model: 'big' }
+
+  const fresh = new RouteTracker()
+  const applied = fresh.decide('r1', { provider: 'default', model: 'std' }, route, { isRoot: true, defaults })
+  check('a root session on the profile default still gets routed', applied?.model === 'big')
+
+  const picked = new RouteTracker()
+  const before = picked.decide('r2', { provider: 'gpt-6-luna', model: 'luna' }, route, { isRoot: true, defaults })
+  check('a pick made before the first request wins', before === null)
+  check('and the session counts as manual', picked.isManual('r2') === true)
+
+  const pickedRoute = new RouteTracker()
+  const same = pickedRoute.decide('r3', { provider: 'strong', model: 'big' }, route, { isRoot: true, defaults })
+  check('a pick equal to the route is not treated as manual', same !== null)
+
+  const child = new RouteTracker()
+  const inherited = child.decide('r4', { provider: 'strong', model: 'big' }, { provider: 'cheap', model: 'small' }, { isRoot: false, defaults })
+  check('a child inheriting its parent route is not a manual pick', inherited?.model === 'small')
+
+  const blind = new RouteTracker()
+  const noDefaults = blind.decide('r5', { provider: 'anything', model: 'else' }, route)
+  check('without a known default the old rule still applies', noDefaults?.model === 'big')
+}
+
 // ---------------------------------------------------------------- listener
 
 section('installRouting')

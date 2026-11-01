@@ -48,7 +48,7 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 | `chain_close_round` | plan | 六项校验后关闭，产出结论与审计副本 |
 | `chain_status` | 全部 | 只读看板：当前轮、T0、预算与计数、失败签名、证据、门禁 |
 | `chain_export_audit` | plan | 把整轮导出成 `.dsh/rounds/<roundId>.json` |
-| `chain_role_models` | 全部（改表限根会话） | 读 / 改「角色→模型」表，写进项目的 `.dsh/role-chain.json` |
+| `chain_role_models` | 全部（改表限根会话） | 读 / 改「角色→模型」表，写进项目的 `.dsh/role-chain.json`；带 `listModels` 可列可选模型 |
 
 ## 角色→模型（plan 用强模型，code 用便宜模型）
 
@@ -80,11 +80,14 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 **一、在对话里改**（不用碰文件）——让 plan 调 `chain_role_models`：
 
 ```text
+chain_role_models({ listModels: true })       // 先看有哪些 provider / model id 可填
 chain_role_models({ set: { code: { provider: "openai", model: "gpt-6-luna", reasoningEffort: "low" } } })
 chain_role_models({ clear: ["review"] })      // 删掉某个角色的映射
 chain_role_models({ enabled: false })         // 整体暂停，表保留
 chain_role_models({})                         // 只看现在是什么
 ```
+
+`listModels` 与输入框的模型选择器同源（都走 `llm.listProviders()` / `llm.listModels()`），所以它列出来的 id 就是能直接填的 id。
 
 它写的是同一个文件，原子写入（临时文件 + rename），未知角色、缺 `provider`/`model` 会被拒且不动原文件。改表只允许根会话（plan）发起；子代理调用会得到 `ESCALATE_TO_PARENT`，把请求带回 plan 即可。
 
