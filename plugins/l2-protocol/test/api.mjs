@@ -63,7 +63,7 @@ function fakeCtx(overrides = {}) {
             if (!(MODEL_CATALOG[provider] ?? []).some((entry) => entry.id === model)) {
               throw new Error(`unknown model ${provider}/${model}`)
             }
-            return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }] } }
+            return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }], defaultEffort: 'high' } }
           },
         }
       }
@@ -204,6 +204,17 @@ async function main() {
       JSON.stringify(answer.json.providers?.[0]),
     )
     check('no catalog errors', (answer.json.catalogErrors ?? []).length === 0)
+    check(
+      'each model carries the efforts it accepts',
+      Array.isArray(answer.json.providers?.[0]?.models?.[0]?.efforts)
+        && answer.json.providers[0].models[0].efforts.includes('high'),
+      JSON.stringify(answer.json.providers?.[0]?.models?.[0]),
+    )
+    check(
+      'and the default effort when the registry names one',
+      answer.json.providers?.[0]?.models?.[0]?.defaultEffort === 'high',
+      JSON.stringify(answer.json.providers?.[0]?.models?.[0]),
+    )
 
     writeTable({ enabled: true, roleModels: '{broken' })
     const broken = await call(routes[0])

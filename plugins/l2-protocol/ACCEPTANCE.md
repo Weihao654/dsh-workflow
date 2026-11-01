@@ -11,7 +11,7 @@
 | 1 | 源文件语法（7 个） | `node --check lib/*.js` | 全部 ok |
 | 2 | 状态机全流程 | `node test/smoke.mjs` | **21 passed, 0 failed** |
 | 3 | 角色→模型路由 + 改表工具 + 写前校验 | `node test/routes.mjs` | **58 passed, 0 failed** |
-| 4 | 设置页 API（含 webServer 缺注入的回归） | `node test/api.mjs` | **36 passed, 0 failed** |
+| 4 | 设置页 API（含 webServer 缺注入的回归） | `node test/api.mjs` | **38 passed, 0 failed** |
 | 5 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
 | 6 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
 | 7 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 10 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |
@@ -97,6 +97,7 @@ chain_gate(kind: "accept", question: "门禁测试：这条链路能继续吗？
 
 - [ ] 看到四行（plan / work / code / review），每行三个下拉：provider / 模型 / 思考深度；顶部写着写到哪（`.dsh\role-chain.json` 的绝对路径）
 - [ ] provider 下拉里是本机配置的 provider（`deepseek-official` / `deepseek-account` / `openai` / 两个 modlens）；模型下拉随 provider 变
+- [ ] 思考深度下拉**只列该模型报出的档位**（`deepseek-flash` 是 `off / low / high / max`，没有 `minimal`），空选项显示 `（默认 high）` 之类；没选模型时这个下拉是禁用的
 - [ ] 改一个角色（例如 review 选 `deepseek-account` + `deepseek-v4-pro`）→ 保存 → 提示"已写入 …"；打开那个文件，`roleModels.review` 已更新
 - [ ] 故意选一个不存在的模型（若下拉里没有，用 `chain_role_models({ set: { review: { provider: "deepseek-account", model: "typo" } } })`）→ 保存被拒并显示 `ROUTE_UNKNOWN` 原因，文件没被改坏
 - [ ] 取消「启用这张表」→ 保存 → 文件里 `"enabled": false`

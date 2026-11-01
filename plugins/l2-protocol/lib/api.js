@@ -33,7 +33,7 @@ function sendJson(response, status, payload) {
 
 function sessionCwd(ctx) {
   try {
-    const sessions = ctx.get?.('sessions') ?? ctx.sessions
+    const sessions = serviceOf(ctx, 'sessions')
     const list = typeof sessions?.list === 'function' ? sessions.list() : []
     for (let index = list.length - 1; index >= 0; index -= 1) {
       const cwd = list[index]?.header?.cwd
@@ -43,7 +43,7 @@ function sessionCwd(ctx) {
     // fall through to the harness default
   }
   try {
-    const working = ctx.get?.('workingDirectory') ?? ctx.workingDirectory
+    const working = serviceOf(ctx, 'workingDirectory')
     const fallback = working?.defaultDirectory
     if (typeof fallback === 'string' && fallback) return fallback
   } catch {
@@ -88,9 +88,31 @@ function readBody(request) {
   })
 }
 
-/** The model catalog behind the dropdowns, with the same source the tool uses. */
+/** Read a service without tripping the inject guard (property access throws). */
+function serviceOf(ctx, name) {
+  try {
+    const viaGet = ctx.get?.(name)
+    if (viaGet) return viaGet
+  } catch {
+    // get() unavailable — fall through
+  }
+  try {
+    return ctx[name]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The model catalog behind the dropdowns, with the same source the tool uses.
+ *
+ * Each model also carries the `reasoningEffort` ids it actually accepts, read
+ * from the LLM registry. That is not cosmetic: the validator rejects an effort a
+ * model does not advertise (`deepseek-flash` takes off/low/high/max, not medium),
+ * so a hardcoded dropdown would let the user pick a value that always fails.
+ */
 async function modelCatalog(ctx) {
-  const llm = ctx.get?.('llm') ?? ctx.llm
+  const llm = serviceOf(ctx, 'llm')
   if (!llm) return { providers: [], errors: ['llm 服务不可用，读不到模型清单'] }
   const providers = []
   const errors = []
@@ -105,10 +127,29 @@ async function modelCatalog(ctx) {
     if (!id) continue
     try {
       const models = await llm.listModels(id)
+      const rows = []
+      for (const model of models ?? []) {
+        const row = { id: String(model.id), name: String(model.name ?? model.id) }
+        if (typeof llm.resolveModelInfo === 'function') {
+          try {
+            const info = await llm.resolveModelInfo(id, row.id)
+            const efforts = info?.reasoning?.efforts
+            if (Array.isArray(efforts)) {
+              row.efforts = efforts
+                .map((effort) => String(effort?.id ?? effort))
+                .filter((effort) => effort !== '')
+            }
+            if (info?.reasoning?.defaultEffort) row.defaultEffort = String(info.reasoning.defaultEffort)
+          } catch (error) {
+            errors.push(`${id}/${row.id}: ${error.message}`)
+          }
+        }
+        rows.push(row)
+      }
       providers.push({
         provider: id,
         name: String(provider?.displayName ?? provider?.name ?? id),
-        models: (models ?? []).map((model) => ({ id: String(model.id), name: String(model.name ?? model.id) })),
+        models: rows,
       })
     } catch (error) {
       errors.push(`${id}: ${error.message}`)

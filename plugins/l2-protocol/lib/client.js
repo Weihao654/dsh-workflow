@@ -101,7 +101,6 @@ window.__ModuleLoader__.load({
       code: '写代码',
       review: '只读终审',
     }
-    const EFFORTS = ['', 'minimal', 'low', 'medium', 'high']
 
     const styles = {
       wrap: { display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px', lineHeight: 1.5 },
@@ -167,13 +166,23 @@ window.__ModuleLoader__.load({
       const absorb = React.useCallback((payload) => {
         setData(payload)
         setEnabled(payload?.enabled !== false)
+        const effortsFor = (route) => {
+          const found = (payload?.providers ?? []).find((entry) => entry.provider === route.provider)
+          const model = (found?.models ?? []).find((entry) => entry.id === route.model)
+          return Array.isArray(model?.efforts) ? model.efforts : []
+        }
         const next = {}
         for (const role of ROLES) {
           const route = roleOf(payload?.roles, role)
+          const effort = String(route.reasoningEffort ?? '')
+          const allowed = effortsFor(route)
           next[role] = {
             provider: String(route.provider ?? ''),
             model: String(route.model ?? ''),
-            reasoningEffort: String(route.reasoningEffort ?? ''),
+            // Drop an effort the model provably does not accept (a hand-edited
+            // "medium" on deepseek-flash would otherwise be resent and refused
+            // on every save). An unknown model keeps its value untouched.
+            reasoningEffort: effort && allowed.length > 0 && !allowed.includes(effort) ? '' : effort,
           }
         }
         setDraft(next)
@@ -217,7 +226,17 @@ window.__ModuleLoader__.load({
         setDraft((current) => {
           const next = { ...current }
           const route = { ...(next[role] ?? { provider: '', model: '', reasoningEffort: '' }), [key]: value }
-          if (key === 'provider') route.model = ''
+          if (key === 'provider') {
+            route.model = ''
+            route.reasoningEffort = ''
+          }
+          if (key === 'model') {
+            const picked = modelsOf(route.provider).find((model) => model.id === value)
+            const allowed = Array.isArray(picked?.efforts) ? picked.efforts : []
+            // Switching to a model that does not advertise the current effort
+            // would otherwise send a value the host refuses on save.
+            if (route.reasoningEffort && !allowed.includes(route.reasoningEffort)) route.reasoningEffort = ''
+          }
           next[role] = route
           return next
         })
@@ -268,6 +287,12 @@ window.__ModuleLoader__.load({
       const rows = ROLES.map((role) => {
         const route = draft[role] ?? { provider: '', model: '', reasoningEffort: '' }
         const models = modelsOf(route.provider)
+        const picked = models.find((model) => model.id === route.model)
+        // Only the efforts this model advertises: `deepseek-flash` refuses
+        // `medium`, and a hardcoded list would offer a value that always fails
+        // validation on save.
+        const efforts = Array.isArray(picked?.efforts) ? picked.efforts : []
+        const defaultEffort = picked?.defaultEffort ? `（默认 ${picked.defaultEffort}）` : '（默认）'
         return React.createElement(
           'div',
           { key: role, style: styles.grid },
@@ -311,12 +336,13 @@ window.__ModuleLoader__.load({
             {
               style: styles.select,
               value: route.reasoningEffort ?? '',
-              disabled: busy,
+              disabled: busy || !route.model || efforts.length === 0,
               onChange: (event) => patch(role, 'reasoningEffort', event.target.value),
             },
-            EFFORTS.map((effort) =>
-              React.createElement('option', { key: effort, value: effort }, effort || '默认思考'),
-            ),
+            [
+              React.createElement('option', { key: '', value: '' }, defaultEffort),
+              ...efforts.map((effort) => React.createElement('option', { key: effort, value: effort }, effort)),
+            ],
           ),
         )
       })

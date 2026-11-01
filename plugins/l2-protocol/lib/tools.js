@@ -266,7 +266,7 @@ export function registerTools(ctx, options = {}) {
     },
     run: async ({ ctx, exec, args }) => {
       if (args.listModels) {
-        const llm = ctx.get?.('llm') ?? ctx.llm
+        const llm = serviceOf(ctx, 'llm')
         if (!llm) return { ok: false, error: 'llm 服务不可用，读不到模型清单' }
         try {
           const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : []
@@ -279,16 +279,29 @@ export function registerTools(ctx, options = {}) {
               out.push({ provider: provider.id, name: provider.name, error: error.message, models: [] })
               continue
             }
-            out.push({
-              provider: provider.id,
-              name: provider.name,
-              models: models.map((model) => ({ id: model.id, name: model.name })),
-            })
+            const rows = []
+            for (const model of models) {
+              const row = { id: model.id, name: model.name }
+              // The efforts this model advertises, so a `set` never names one the
+              // validator would then refuse (deepseek-flash has no "medium").
+              if (typeof llm.resolveModelInfo === 'function') {
+                try {
+                  const info = await llm.resolveModelInfo(provider.id, model.id)
+                  const efforts = info?.reasoning?.efforts
+                  if (Array.isArray(efforts)) row.efforts = efforts.map((effort) => String(effort?.id ?? effort))
+                  if (info?.reasoning?.defaultEffort) row.defaultEffort = String(info.reasoning.defaultEffort)
+                } catch {
+                  // a model that cannot be resolved simply lists without efforts
+                }
+              }
+              rows.push(row)
+            }
+            out.push({ provider: provider.id, name: provider.name, models: rows })
           }
           return {
             ok: true,
             providers: out,
-            note: '把这些 id 填进 set 就能用；写错了不会自动降级，调用会直接失败。',
+            note: '把这些 id 填进 set 就能用；reasoningEffort 只能在 efforts 里选。写错了不会自动降级，调用会直接失败。',
             effective: describeRoutes(ctx, exec, tracker),
           }
         } catch (error) {
@@ -342,6 +355,24 @@ export function registerTools(ctx, options = {}) {
 }
 
 /**
+ * Read a service without tripping the Cordis inject guard: property access to a
+ * service the fiber did not inject throws, while `ctx.get()` is always legal.
+ */
+export function serviceOf(ctx, name) {
+  try {
+    const viaGet = ctx.get?.(name)
+    if (viaGet) return viaGet
+  } catch {
+    // get() unavailable — fall through
+  }
+  try {
+    return ctx[name]
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Ask the LLM registry whether each candidate route really exists, and whether
  * the model accepts the requested reasoning effort.
  *
@@ -351,7 +382,7 @@ export function registerTools(ctx, options = {}) {
  * expensive to diagnose mid-round, so a write is refused unless it validates.
  */
 export async function validateRoutes(ctx, routes) {
-  const llm = ctx.get?.('llm') ?? ctx.llm
+  const llm = serviceOf(ctx, 'llm')
   if (!llm || typeof llm.resolveModelInfo !== 'function') return []
   if (!routes || typeof routes !== 'object') return []
 

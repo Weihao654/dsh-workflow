@@ -562,6 +562,7 @@ B 的最小可行形态（约 150 行客户端 + 30 行宿主）：
 
 ### 18.4 已验证 / 待验证
 
-- 已验证：`test/api.mjs` **36 passed**（注册/注销、惰性降级、cwd 解析、GET 回显与坏文件、POST 的 403/400/200/409、拒写不动文件、`skipValidation`、单改 `enabled`、`clear`、405；另有两条回归：`webServer` 属性抛错时仍由 `ctx.get` 兜住、两次查询都失败时是惰性而不是抛错）。
-- 待验证（需重启后在真实页面）：`settings.section` 这一节是否出现在设置左栏、四个下拉是否随 provider 联动、保存后文件是否更新。
+- 已验证：`test/api.mjs` **38 passed**（注册/注销、惰性降级、cwd 解析、GET 回显与坏文件、POST 的 403/400/200/409、拒写不动文件、`skipValidation`、单改 `enabled`、`clear`、405；另有三条回归：`webServer` 属性抛错时仍由 `ctx.get` 兜住、两次查询都失败时是惰性而不是抛错、每个模型带上它接受的 `efforts` 与 `defaultEffort`）。
+- 待验证（需重启后在真实页面）：`settings.section` 这一节是否出现在设置左栏、四个下拉是否随 provider 联动、思考深度下拉是否只列该模型接受的档位、保存后文件是否更新。
 - 已踩：`ctx.webServer` 是属性访问，未在 `inject` 里声明就抛 `cannot get property "webServer" without inject`，会把整个插件 fiber 弄失败——所以 API 必须用 `ctx.inject(['webServer'], …)` 拿到子上下文再注册。
+- 已踩：思考深度不能写死成 `['','minimal','low','medium','high']`。各模型接受的档位不同（`deepseek-flash` 是 `off/low/high/max`，没有 `minimal`），而写前校验会照实拒绝，于是"卡片里能选、保存必失败"。现在目录里每个模型都带 `efforts`，下拉只列这些值，没选模型时禁用。

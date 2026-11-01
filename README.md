@@ -60,7 +60,7 @@ plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
 
 不想手写 JSON 也行，两个入口：在 plan 会话里调 `chain_role_models({ set: { code: { provider: "openai", model: "gpt-6-luna", reasoningEffort: "low" } } })`（原子写入，非法输入拒绝且不动原文件）；或者 **DSH 设置 → 角色 → 模型** 里点选四个角色的 provider / 模型 / 思考深度，保存写的是同一个文件（客户端半身需要重启一次才加载）。
 
-装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。
+装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。这条靠客户端过滤实现，自检步骤见 `plugins/l2-protocol/ACCEPTANCE.md` 第 5 步。
 
 ## 一眼看懂差别
 
