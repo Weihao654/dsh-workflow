@@ -258,6 +258,10 @@ export function registerTools(ctx, options = {}) {
           type: 'boolean',
           description: '可选：只读，列出当前可选的 provider 与其模型 id（与界面模型选择器同源）。写表前不知道该填什么时先调这个。',
         },
+        skipValidation: {
+          type: 'boolean',
+          description: '可选：跳过写前校验。默认会先问 llm.resolveModelInfo，provider/model 不存在或 effort 不被接受就拒写。',
+        },
       },
     },
     run: async ({ ctx, exec, args }) => {
@@ -301,6 +305,19 @@ export function registerTools(ctx, options = {}) {
         }
       }
       if (!writes) return describeRoutes(ctx, exec, tracker)
+      if (!args.skipValidation) {
+        const problems = await validateRoutes(ctx, args.set)
+        if (problems.length > 0) {
+          return {
+            ok: false,
+            code: 'ROUTE_UNKNOWN',
+            path: describeRoutes(ctx, exec, tracker).configPath,
+            errors: problems,
+            hint: '写错不会自动降级，那一环会直接失败，所以先拒写。确认要用就带 skipValidation:true。',
+            current: describeRoutes(ctx, exec, tracker),
+          }
+        }
+      }
       const saved = saveRoleModels(exec.cwd, { set: args.set, clear: args.clear, enabled: args.enabled })
       if (!saved.ok) return { ok: false, path: saved.path, errors: saved.errors }
       return {
@@ -322,4 +339,44 @@ export function registerTools(ctx, options = {}) {
       }
     }
   }
+}
+
+/**
+ * Ask the LLM registry whether each candidate route really exists, and whether
+ * the model accepts the requested reasoning effort.
+ *
+ * The routing contract has no soft landing: an unsupported provider/model or an
+ * effort the model does not advertise fails that call outright, and a chain
+ * fails at the step that needed it. A typo is cheap to prevent here and
+ * expensive to diagnose mid-round, so a write is refused unless it validates.
+ */
+export async function validateRoutes(ctx, routes) {
+  const llm = ctx.get?.('llm') ?? ctx.llm
+  if (!llm || typeof llm.resolveModelInfo !== 'function') return []
+  if (!routes || typeof routes !== 'object') return []
+
+  const problems = []
+  for (const [role, route] of Object.entries(routes)) {
+    if (!route || typeof route !== 'object') continue
+    const provider = typeof route.provider === 'string' ? route.provider.trim() : ''
+    const model = typeof route.model === 'string' ? route.model.trim() : ''
+    if (!provider || !model) continue // normalizeRoleModels already reports these
+
+    let info
+    try {
+      info = await llm.resolveModelInfo(provider, model)
+    } catch (error) {
+      problems.push(`${role}: ${provider}/${model} 不可用（${error?.message ?? error}）`)
+      continue
+    }
+
+    const efforts = Array.isArray(info?.reasoning?.efforts)
+      ? info.reasoning.efforts.map((entry) => String(entry?.id ?? '')).filter(Boolean)
+      : []
+    const effort = typeof route.reasoningEffort === 'string' ? route.reasoningEffort.trim() : ''
+    if (effort && efforts.length > 0 && !efforts.includes(effort)) {
+      problems.push(`${role}: ${provider}/${model} 不接受 reasoningEffort="${effort}"（可用：${efforts.join(' / ')}）`)
+    }
+  }
+  return problems
 }

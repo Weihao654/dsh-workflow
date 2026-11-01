@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 1 | 源文件语法（7 个） | `node --check lib/*.js` | 全部 ok |
 | 2 | 状态机全流程 | `node test/smoke.mjs` | **21 passed, 0 failed** |
-| 3 | 角色→模型路由 + 改表工具 | `node test/routes.mjs` | **45 passed, 0 failed** |
+| 3 | 角色→模型路由 + 改表工具 + 写前校验 | `node test/routes.mjs` | **58 passed, 0 failed** |
 | 4 | bundle 安装 | `plugin_manager install_bundle` | `stage: enable, changed: true, application: applied`，pnpm exit 0 |
 | 5 | 插件行激活 | `plugin_manager list_plugins` | `include:role-chain-protocol` → `enabled: true, fiberPhase: "active"` |
 | 6 | 工具真的注册了 | `~/.dsh/logs/desktop-next.log` | `[role-chain] 9 个 chain_* 工具已注册`，`pluginId: include:role-chain-protocol` |

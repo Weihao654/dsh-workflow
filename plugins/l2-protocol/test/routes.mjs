@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import assert from 'node:assert/strict'
 
 import { normalizeRoleModels, loadRoutes, saveRoleModels, RouteTracker, installRouting, describeRoutes } from '../lib/role-models.js'
+import { validateRoutes } from '../lib/tools.js'
 
 const DIR = join(process.cwd(), '.routes-test')
 let passed = 0
@@ -246,6 +247,41 @@ section('writing the table from the conversation')
 
   const reloaded = loadRoutes(DIR)
   check('the cache follows the written file', reloaded.exists === true && reloaded.enabled === false)
+}
+
+section('validateRoutes')
+{
+  const ctx = {
+    get: (name) =>
+      name === 'llm'
+        ? {
+            async resolveModelInfo(provider, model) {
+              if (provider !== 'deepseek-account') throw new Error(`no adapter for ${provider}`)
+              if (model === 'typo') throw new Error('model typo not found')
+              return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }] } }
+            },
+          }
+        : undefined,
+  }
+
+  const good = await validateRoutes(ctx, { plan: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'high' } })
+  check('a real route with an advertised effort passes', good.length === 0, JSON.stringify(good))
+
+  const effort = await validateRoutes(ctx, { code: { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'medium' } })
+  check('an effort the model does not advertise is refused', effort.length === 1 && effort[0].includes('不接受'))
+  check('the refusal lists what is available', effort[0].includes('high / low'))
+
+  const typo = await validateRoutes(ctx, { review: { provider: 'deepseek-account', model: 'typo' } })
+  check('an unknown model is refused', typo.length === 1 && typo[0].includes('不可用'))
+
+  const wrongProvider = await validateRoutes(ctx, { work: { provider: 'nowhere', model: 'x' } })
+  check('an unknown provider is refused', wrongProvider.length === 1 && wrongProvider[0].includes('不可用'))
+
+  const partial = await validateRoutes(ctx, { plan: { provider: 'deepseek-account' }, work: { provider: 'deepseek-account', model: 'deepseek-flash' } })
+  check('an incomplete route is left to the writer to report', partial.length === 0)
+
+  const noLlm = await validateRoutes({ get: () => undefined }, { plan: { provider: 'a', model: 'b' } })
+  check('no llm service means no opinion', noLlm.length === 0)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

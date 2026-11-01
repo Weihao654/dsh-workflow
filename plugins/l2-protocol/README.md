@@ -48,7 +48,7 @@ DSH 已经能声明四个角色（本仓库的 `plugins/l1-presets` 做到了：
 | `chain_close_round` | plan | 六项校验后关闭，产出结论与审计副本 |
 | `chain_status` | 全部 | 只读看板：当前轮、T0、预算与计数、失败签名、证据、门禁 |
 | `chain_export_audit` | plan | 把整轮导出成 `.dsh/rounds/<roundId>.json` |
-| `chain_role_models` | 全部（改表限根会话） | 读 / 改「角色→模型」表，写进项目的 `.dsh/role-chain.json`；带 `listModels` 可列可选模型 |
+| `chain_role_models` | 全部（改表限根会话） | 读 / 改「角色→模型」表，写进项目的 `.dsh/role-chain.json`；`listModels` 列可选模型，写前默认校验 |
 
 ## 角色→模型（plan 用强模型，code 用便宜模型）
 
@@ -88,6 +88,8 @@ chain_role_models({})                         // 只看现在是什么
 ```
 
 `listModels` 与输入框的模型选择器同源（都走 `llm.listProviders()` / `llm.listModels()`），所以它列出来的 id 就是能直接填的 id。
+
+**写前校验**：`set` 里每条路由都会先过 `llm.resolveModelInfo(provider, model)`。provider/model 不存在，或 `reasoningEffort` 不是该模型公布的档位，就**整次拒写**并回 `ROUTE_UNKNOWN` + 原因（不猜、不降级——写错了那一环会直接失败）。确认要用就带 `skipValidation: true`。
 
 它写的是同一个文件，原子写入（临时文件 + rename），未知角色、缺 `provider`/`model` 会被拒且不动原文件。改表只允许根会话（plan）发起；子代理调用会得到 `ESCALATE_TO_PARENT`，把请求带回 plan 即可。
 
