@@ -16,6 +16,7 @@
 
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { ROLES } from './roles.js'
 import { normalizeReuse, policyFor } from './dispatch.js'
 
@@ -87,7 +88,8 @@ export function loadRoutes(cwd) {
   let value
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
-    const { roleModels, errors } = normalizeRoleModels(parsed?.roleModels ?? parsed)
+    const source = parsed?.roleModels ?? Object.fromEntries(Object.entries(parsed ?? {}).filter(([key]) => ROLES.includes(key)))
+    const { roleModels, errors } = normalizeRoleModels(source)
     const { reuse, errors: reuseErrors } = normalizeReuse(parsed?.reuse)
     value = { path, exists: true, enabled: parsed?.enabled !== false, roleModels, reuse, errors: [...errors, ...reuseErrors] }
   } catch (error) {
@@ -119,10 +121,13 @@ export function saveRoleModels(cwd, change = {}) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) document = parsed
-  } catch {
-    // A missing or unreadable file is simply replaced.
+  } catch (error) {
+    if (error.code !== 'ENOENT') return { ok: false, path, errors: [`拒绝覆盖无法读取的配置：${error.message}`] }
   }
-  if (!document.roleModels || typeof document.roleModels !== 'object') document.roleModels = {}
+  if (!document.roleModels || typeof document.roleModels !== 'object') {
+    document.roleModels = Object.fromEntries(Object.entries(document).filter(([key]) => ROLES.includes(key)))
+    for (const role of ROLES) delete document[role]
+  }
 
   const errors = []
 
@@ -131,7 +136,7 @@ export function saveRoleModels(cwd, change = {}) {
   // reuse: merge per role, so switching code to "persistent" does not silently
   // reset work's policy. A null value removes that role's override.
   if (change.reuse !== undefined) {
-    const { reuse, errors: reuseErrors } = normalizeReuse(change.reuse)
+    const { reuse, errors: reuseErrors } = normalizeReuse(change.reuse, { allowClear: true })
     errors.push(...reuseErrors)
     if (!document.reuse || typeof document.reuse !== 'object') document.reuse = {}
     for (const [role, policy] of Object.entries(reuse)) document.reuse[role] = policy
@@ -174,7 +179,8 @@ export function saveRoleModels(cwd, change = {}) {
   const { roleModels, errors: invalid } = normalizeRoleModels(document.roleModels)
   if (invalid.length > 0) return { ok: false, path, errors: invalid }
 
-  const payload = { enabled: document.enabled !== false, roleModels }
+  const payload = { ...document, enabled: document.enabled !== false, roleModels }
+  delete payload.reuse
   const keptReuse = {}
   for (const role of ['work', 'code', 'review']) {
     const policy = document.reuse?.[role]
@@ -182,7 +188,7 @@ export function saveRoleModels(cwd, change = {}) {
   }
   if (Object.keys(keptReuse).length > 0) payload.reuse = keptReuse
   const directory = join(cwd || '.', CONFIG_DIR)
-  const temp = `${path}.tmp`
+  const temp = `${path}.${randomUUID()}.tmp`
   try {
     mkdirSync(directory, { recursive: true })
     writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')

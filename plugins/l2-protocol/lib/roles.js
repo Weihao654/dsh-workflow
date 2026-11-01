@@ -1,55 +1,33 @@
-// Who is calling? Runtime facts only — never the model's self-description.
-//
-// Role comes from the agent's frozen preset revision (SessionHeader.agentPreset,
-// falling back to agentPresets.composedPreset). Root-ness comes from the session
-// header: a spawned subagent carries parentSession / origin, a session the user
-// opened does not. That distinction is what makes D1 (gate on the root only)
-// enforceable, because ctx.userQuestions throws DELEGATED_CALLER for an agent
-// owned by another agent.
-
+// Roles and authority come from frozen session facts, never tool arguments.
+import { serviceOf } from './host.js'
 export const ROLES = ['plan', 'work', 'code', 'review']
-
-export const ROLE_LABEL = {
-  plan: 'plan',
-  work: 'work',
-  code: 'code',
-  review: 'review',
-}
-
-function safeCwd() {
-  try {
-    return process.cwd()
-  } catch {
-    return '.'
-  }
-}
+export const ROLE_LABEL = Object.fromEntries(ROLES.map(role => [role, role]))
 
 export function resolveExec(ctx, exec) {
   const agent = exec?.agent
   const agentCtx = agent?.ctx ?? exec?.ctx
-  const header = agent?.session?.header ?? agentCtx?.session?.header ?? {}
-
+  const sessions = serviceOf(ctx, 'sessions')
+  const session = (agent?.id ? sessions?.get?.(agent.id) : undefined) ?? agent?.session ?? agentCtx?.session
+  const header = session?.header ?? {}
   let preset = header.agentPreset
   if (!preset) {
-    try {
-      preset = ctx.agentPresets?.composedPreset?.(agentCtx ?? ctx)
-    } catch {
-      preset = undefined
-    }
+    try { preset = serviceOf(ctx, 'agentPresets')?.composedPreset?.(agentCtx ?? ctx) } catch {}
   }
-
-  const role = ROLES.includes(preset) ? preset : null
-  const isRoot = !header.parentSession && header.origin !== 'subagent'
-  const sessionId = header.id ?? agent?.id ?? exec?.sessionId ?? 'unknown-session'
-
+  let cwd = header.cwd
+  const working = serviceOf(ctx, 'workingDirectory')
+  try { if (session && working?.get) cwd = working.get(session) ?? cwd } catch {}
+  cwd ??= working?.defaultDirectory ?? process.cwd()
   return {
-    agent: agent ?? null, // chain_gate needs the live Agent handle
-    role,
+    agent: agent ?? null,
+    role: ROLES.includes(preset) ? preset : null,
     preset: preset ?? null,
-    isRoot,
-    sessionId: String(sessionId),
+    // Unknown lineage must not acquire root authority.
+    isRoot: Boolean(session?.header) && !header.parentSession && header.origin !== 'subagent',
+    sessionId: String(header.id ?? agent?.id ?? exec?.sessionId ?? 'unknown-session'),
     parentSession: header.parentSession ?? null,
     delegationDepth: header.delegationDepth ?? null,
-    cwd: header.cwd ?? safeCwd(),
+    cwd,
+    signal: exec?.signal,
+    callId: exec?.callId,
   }
 }

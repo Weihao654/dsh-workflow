@@ -1,90 +1,54 @@
-# dsh-workflow · 角色链的工作流插件
+# DSH Role Chain
 
-给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 用的两个 bundle，把 `plan → work → code → work → review → work → plan` 这条角色协作链从"团队约定"变成"可由机器执行的纪律"。
+用户 ↔ **plan → work → code → work → review → work → plan** ↔ 用户。
 
-```
-用户 ↔ plan → work → code → work → review → work → plan → 用户
-```
+把角色协作与可验收轮次分开：L1 提供角色预设，L2 负责轮次、授权、停止、证据与预算状态。
 
-每轮六步：**核对基线 → 收敛方案与授权 → 连续实施（唯一 T0）→ 限定修正（失败/重试/重启累计计数）→ 独立终审（分层证据不得互相扩大）→ 交付并关闭**（版本 / 结果 / 未覆盖项 / 费用 / 停自有服务）。
+## 当前状态
 
-![角色链与一轮六步](assets/architecture.png)
+本仓库正在验证 **L2 0.2.0-rc.1**。这是源码候选版，不代表当前 DSH 已重新加载或完成生产验收。
 
----
+- 停止先记录原因、范围和稳定请求 ID，再操作确切持有的 Agent/进程能力；`accepted`、`inactive`、名册为空都不是退出证明。
+- work 同轮复用，code 默认按任务族复用，review 独立新建；忙碌或取消后不能用 `fresh`、改策略、删名册另开替身。
+- 原始 T0 冻结一次，期限默认 90 分钟、允许缩短，不允许通过阶段切换、重试或控制器重建延长。
+- 请求级账本统计可观察到的所有角色/重试请求；输入估算预留、输出限额、未结算用量保留 pending。**不是预付费绝对 token 上限，也不是账单。**
+- 默认状态是六字段短卡；新范围、预算、业务规则或权限变更才要求用户决策。
+- **当前安装的 Windows 隔离后端只承诺 partial，生产 `chain_compute` 因而拒绝启动。** Windows Job 只负责进程范围与期限，不是文件安全沙箱；不回退裸 shell 或远程计算。
 
-## 两个部分
+## 两个包
 
-| 目录 | 是什么 | 状态 |
+| 包 | 用途 | 边界 |
 |---|---|---|
-| [`plugins/l1-presets/`](./plugins/l1-presets/) | **纯配置**：四个 preset（plan / work / code / review）的人设与工具矩阵，外加 `protocol/ROUND-PROTOCOL.md` 可抄进项目 `AGENTS.md`。零宿主代码 | v1.0 已装 |
-| [`plugins/l2-protocol/`](./plugins/l2-protocol/) | **协议插件**：9 个 `chain_*` 工具 + 轮次状态机，把 T0 唯一、计数越限、证据分层、门禁阻塞、收尾校验变成硬约束，并把每轮落盘成审计文件 | v0.1（P0）已装，21 条自测通过 |
+| [L1 角色预设](<plugins/l1-presets/README.md>) | plan/work/code/review 及共同协议 | 可独立使用；没有 L2 时纪律主要依靠提示词与人工检查 |
+| [L2 轮次协议](<plugins/l2-protocol/README.md>) | 14 个工具、持久状态、受控派发/停止、账本与模型设置卡 | 需要当前 Host API；候选版尚未完成真实 Host/GUI 集成验收 |
 
-分开是有意的：L1 决定"谁有什么工具"，L2 决定"事实必须成立"。L2 依赖 L1（按角色判定），L1 不依赖 L2（不装 L2 也能用，只是纪律靠自觉）。
+模型设置保留标准内置预设与 plan 的新会话入口，仅隐藏内部 work/code/review；手动选模优先于项目角色映射。effort 来自实际模型元数据，不硬编码档位。
 
-## 装
+## 使用与安装
 
-顺序：先 L1，后 L2，然后**新开会话**（preset 与工具集在会话创建时冻结）。
+先阅读 [L2 使用说明](<plugins/l2-protocol/README.md>)、[设计与限制](<plugins/l2-protocol/DESIGN.md>) 和 [验收范围](<plugins/l2-protocol/ACCEPTANCE.md>)。
 
-从本仓库直接装，不需要发布到 npm（`#path:` 选子包）：
+安装/升级应通过 DSH 插件管理器，不能手工改 profile 配置。本仓库的两个包此前采用本地链接安装；历史上重新安装链接包曾清空源目录，**不要用重装链接包测试源码变更**。替换已加载 Host 模块需要受控重启后另做验收；本次没有执行重装、重启或替换 Web 服务。
 
-```
-plugin_manager install_bundle target: github:Weihao654/dsh-workflow#path:/plugins/l1-presets
-plugin_manager install_bundle target: github:Weihao654/dsh-workflow#path:/plugins/l2-protocol
-```
+关闭或停止的根 plan 会话不自动恢复推理。关闭工具返回收尾回执；下一轮目前要求新的根 plan 会话，不把关闭后的模型续请求当作授权。
 
-本地开发时也可以直接指向目录：
+## 验证
 
-```
-plugin_manager install_bundle target: <本仓库>/plugins/l1-presets
-plugin_manager install_bundle target: <本仓库>/plugins/l2-protocol
-```
+从 L2 包目录执行：
 
-两者都是普通 DSH bundle（`dsh.bundle.patch` 指向各自的 `cordis.patch.yml`），安装后可在插件列表确认 `fiberPhase: active`。详细前置、卸载与验证见各自 README。
-
-## 角色→模型（plan 用强模型，code 用便宜模型）
-
-子代理默认继承父代理的模型，所以四个角色本来共用一个。要分工，在**项目里**放一张表：
-
-`<项目根>/.dsh/role-chain.json`
-
-```json
-{
-  "roleModels": {
-    "plan": { "provider": "deepseek-account", "model": "deepseek-flash", "reasoningEffort": "high" },
-    "code": { "provider": "openai", "model": "gpt-6-luna" }
-  }
-}
+```powershell
+node --test test/control.mjs test/usage.mjs test/git.mjs test/smoke.mjs test/dispatch.mjs
+node test/routes.mjs
+node test/api.mjs
+node test/windows.mjs
 ```
 
-改完下一轮请求就生效：L2 用 `agent/request` 瀑布按 `session.header.agentPreset` 认出角色，查表换 `provider` / `model`。**你在输入框手选过模型的会话，它不会再覆盖**。表写坏了只是路由停用，`chain_status.roleModels.errors` 会说明原因。
+前三类主要为真实控制器加假 Host/Agent 的确定性测试。Windows 原生短任务测试会启动真实监督器与子孙进程，但显式使用 **fake-full 隔离契约**，只检查原生 Job、期限、参数和停止竞态；不能据此证明安全隔离、真实 Host 崩溃恢复或生产可用性。测试结果与未覆盖项见 [验收说明](<plugins/l2-protocol/ACCEPTANCE.md>)。
 
-不想手写 JSON 也行，两个入口：在 plan 会话里调 `chain_role_models({ set: { code: { provider: "openai", model: "gpt-6-luna", reasoningEffort: "low" } } })`（原子写入，非法输入拒绝且不动原文件）；或者 **DSH 设置 → 角色 → 模型** 里点选四个角色的 provider / 模型 / 思考深度，保存写的是同一个文件（客户端半身需要重启一次才加载）。
+Git 基线查询禁用已发现的过滤器及 fsmonitor/hook 回调，跳过子模块脏状态检查；该 dirty 结果只覆盖顶层工作树，可能不同于普通 Git status。
 
-装了 L2 之后，新建会话的预设菜单只保留 DSH 自带的几项 + `plan`；`work` / `code` / `review` 只由 plan 派发，不再出现在菜单里（Settings → Agent Presets 页里仍可见）。这条靠客户端过滤实现，自检步骤见 `plugins/l2-protocol/ACCEPTANCE.md` 第 5 步。
+## 发布
 
-## 角色复用（不必每个任务都新建代理）
+仓库：[Weihao654/dsh-workflow](https://github.com/Weihao654/dsh-workflow)。市场提交：[PR #10945](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/10945)；是否合并必须查看实际当前状态，不能由提交成功推断。
 
-同一个项目里，`chain_dispatch` 会按策略**复用**已有子代理，而不是每个任务都新开一个：
-
-```json
-{ "reuse": { "work": "persistent", "code": "family", "review": "fresh" } }
-```
-
-`work` 跨轮常驻；`code` 按任务族（`family` 参数）一类一个；`review` 每轮新开——独立审核不该继承上一轮的结论。复用时是把新任务**发给同一个子代理**（它接着原来的上下文干），返回的 `action` 会写明 `spawn` 还是 `reuse`；`chain_status.agents` 是当前名册，`chain_release` 退休并释放。换新的 plan 会话后旧名册自动失效、回退新建，不会报错。
-
-## 一眼看懂差别
-
-不装 L2 时，"这一轮只有一个 T0"是一句提示词，模型忘了就忘了；
-装了 L2，`chain_freeze_baseline` 第二次调用直接抛 `BASELINE_ALREADY_FROZEN`，且 T0 是插件自己跑 `git rev-parse HEAD` 得到的，不听模型自述。
-
-同理：同一个测试失败第 3 次会 `exceeded`，越限的轮子 `chain_close_round` 关不掉（除非有用户批准的 `force` 门禁），关掉的轮会自动产出 `.dsh/rounds/<roundId>.json`。
-
-## 诚实声明
-
-- "角色看不见不该有的工具"在 L1 是**结构性**的（工具没挂），在 L2 的 P0 是**代码拒绝**（`ROLE_DENIED`）——迁移计划见 `plugins/l2-protocol/DESIGN.md` §15。
-- `work` 的只读是**软的**：它需要 shell 跑验证命令，所以仍能重定向写文件。
-- 门禁弹卡这一条只能在你自己的会话里验证，步骤见 `plugins/l2-protocol/ACCEPTANCE.md`。
-
-## 关键词
-
-`deepseek-harness` `dsh` `cordis` `plugin` `agent-preset` `workflow` `round` `audit` `role-chain` `subagent`
+MIT。包内链路图标为本项目原创 SVG；架构说明图不是插件运行截图。

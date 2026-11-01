@@ -1,130 +1,39 @@
-// Functional smoke test for the round state machine, without the host.
-// Runs the real service.js + store.js against a fake ctx (a subprocess whose
-// spawn always throws, so the baseline falls back to no-git deterministically —
-// whether or not this checkout happens to sit inside a git repository) and a
-// fake userQuestions.
-
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
+// Controlled fixtures supersede the old unbound-agent/no-git-on-error smoke checks.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { harness } from './helpers.mjs'
 import * as svc from '../lib/service.js'
-import { RoundStore } from '../lib/store.js'
-
-const DIR = join(process.cwd(), '.smoke')
-await rm(DIR, { recursive: true, force: true })
-
-const store = new RoundStore(DIR)
-const ctx = {
-  subprocess: {
-    spawn() {
-      throw new Error('no subprocess available in this test')
-    },
-  },
-  userQuestions: {
-    async ask(req) {
-      ctx.lastAsk = req
-      return { answers: [{ id: 'gate', selected: ['批准'] }] }
-    },
-  },
+const closeout = { version: { commit: '(no-git)', artifact: 'fixture only' }, result: 'partial', uncovered: ['Real Host integration and invoice excluded.'], servicesStopped: true }
+async function evidence(h, work) {
+  await svc.recordEvidence(h.store, work, { layer: 'command', payload: { command: 'deterministic fixture, not a real shell test', exitCode: 0 } })
+  const review = await h.controller.dispatch(h.store, work, { role: 'review', task: 'independent fixture review' })
+  await svc.recordEvidence(h.store, h.exec(review.childId), { layer: 'review', payload: { verdict: 'partial', scope: ['fixture'], uncovered: ['Host integration'] } })
+  await h.complete(review.childId)
 }
-
-const mk = (role, isRoot = false) => ({ agent: { id: `agent-${role}` }, role, isRoot, preset: role, sessionId: `s-${role}`, cwd: DIR })
-const plan = mk('plan', true)
-const work = mk('work')
-const code = mk('code')
-const review = mk('review')
-
-let pass = 0
-let fail = 0
-
-function check(label, cond, detail) {
-  if (cond) {
-    pass += 1
-    console.log(`  PASS ${label}`)
-  } else {
-    fail += 1
-    console.log(`  FAIL ${label}${detail ? ` :: ${detail}` : ''}`)
-  }
-}
-
-async function expectCode(label, code, fn) {
-  try {
-    await fn()
-    check(label, false, `expected ${code}, got success`)
-  } catch (err) {
-    check(label, err.code === code, `expected ${code}, got ${err.code}: ${err.message}`)
-  }
-}
-
-console.log('1) open round')
-const opened = await svc.openRound(store, plan, { goal: 'smoke', budget: { fixes: 2, reruns: 2, restarts: 3 } })
-check('returns roundId', typeof opened.roundId === 'string', opened.roundId)
-check('budget defaults kept', opened.budget.testFailures === undefined && opened.budget.reruns === 2)
-await expectCode('second open rejected', 'ROUND_ALREADY_OPEN', () => svc.openRound(store, plan, { goal: 'again' }))
-
-console.log('2) single T0')
-await expectCode('evidence before T0 rejected', 'NO_BASELINE', () =>
-  svc.recordEvidence(store, work, { layer: 'command', payload: { command: 'x', exitCode: 0 } }),
-)
-const t0 = await svc.freezeBaseline(ctx, store, work, {})
-check('no-git fallback recorded', t0.baseline.mode === 'no-git', JSON.stringify(t0.baseline))
-await expectCode('second freeze rejected', 'BASELINE_ALREADY_FROZEN', () => svc.freezeBaseline(ctx, store, work, {}))
-
-console.log('3) evidence layers')
-const ev = await svc.recordEvidence(store, work, { layer: 'command', payload: { command: 'npm test', exitCode: 0, outputDigest: 'sha256:abc' } })
-check('command evidence bound to t0', ev.evidence.t0Id === t0.baseline.t0Id, ev.evidence.t0Id)
-await expectCode('work cannot write review layer', 'EVIDENCE_LAYER_MISMATCH', () =>
-  svc.recordEvidence(store, work, { layer: 'review', payload: { verdict: 'pass', scope: [], uncovered: [] } }),
-)
-await expectCode('review layer needs verdict/scope/uncovered', 'BAD_ARGS', () =>
-  svc.recordEvidence(store, review, { layer: 'review', payload: { verdict: 'pass' } }),
-)
-await svc.recordEvidence(store, review, { layer: 'review', payload: { verdict: 'pass', scope: ['src/'], uncovered: ['无'] } })
-await svc.recordEvidence(store, code, { layer: 'artifact', payload: { path: 'dist/app.js', bytes: 10 } })
-
-console.log('4) counters and limits')
-await svc.recordFailure(store, work, { kind: 'test', signature: 'pytest::test_login' })
-await svc.recordFailure(store, work, { kind: 'test', signature: 'pytest::test_login' })
-const third = await svc.recordFailure(store, work, { kind: 'test', signature: 'pytest::test_login' })
-check('third same-signature failure flags exceeded', third.exceeded === 'test', JSON.stringify(third))
-check('count is per signature', third.signatureCount === 3, String(third.signatureCount))
-const other = await svc.recordFailure(store, work, { kind: 'test', signature: 'pytest::test_other' })
-check('other signature does not inherit the count', other.signatureCount === 1, String(other.signatureCount))
-
-console.log('5) close is refused while exceeded')
-const closeout = {
-  version: { commit: '(no-git)' },
-  result: 'partial',
-  uncovered: ['未跑真实浏览器'],
-  servicesStopped: true,
-  cost: { tokens: 1234, estimate: true },
-}
-let rejected
-try {
-  await svc.closeRound(store, plan, { closeout })
-} catch (err) {
-  rejected = err
-}
-check('closeout rejected', rejected?.code === 'CLOSEOUT_REJECTED', String(rejected?.message))
-check('reason names the exceeded counter', JSON.stringify(rejected?.extra?.problems ?? []).includes('force'), JSON.stringify(rejected?.extra))
-
-console.log('6) gate: subagent escalates, root blocks and records')
-const escalated = await svc.askGate(ctx, store, work, { kind: 'force', question: '允许越过重试上限吗？' })
-check('subagent gets ESCALATE_TO_PARENT', escalated.ok === false && escalated.code === 'ESCALATE_TO_PARENT', JSON.stringify(escalated))
-const gate = await svc.askGate(ctx, store, plan, { kind: 'force', question: '允许越过重试上限吗？', options: [{ label: '批准' }, { label: '拒绝' }] })
-check('root gate recorded a decision', gate.ok === true && gate.gate.decision === '批准', JSON.stringify(gate))
-
-console.log('7) close passes and exports the audit copy')
-const closed = await svc.closeRound(store, plan, { closeout })
-check('close succeeds', closed.ok === true, JSON.stringify(closed))
-check('summary carries version/result/uncovered/cost', /版本：(no-git)|结果：partial|未覆盖项|费用：/.test(closed.summary), closed.summary)
-check('audit file written', typeof closed.auditPath === 'string' && closed.auditPath.endsWith('.json'), closed.auditPath)
-
-console.log('8) status after close')
-const st = await svc.status(store, { roundId: closed.roundId })
-check('round reported closed', typeof st.closedAt === 'string', String(st.closedAt))
-const idle = await svc.status(store, {})
-check('no active round remains', idle.activeRoundId === null, JSON.stringify(idle))
-
-console.log(`\n${pass} passed, ${fail} failed`)
-await rm(DIR, { recursive: true, force: true })
-process.exit(fail === 0 ? 0 : 1)
+test('six-step fixture closes only after actual fixture exits, keeps unknown cost, and fences the closed root', async t => {
+  const h = await harness(); t.after(() => h.close())
+  const { work, result } = await h.spawnWork()
+  await evidence(h, work)
+  await assert.rejects(svc.closeRound(h.store, h.plan, { closeout }), e => e.code === 'CLOSEOUT_REJECTED')
+  await h.complete(result.childId)
+  const resultClose = await svc.closeRound(h.store, h.plan, { closeout })
+  assert.equal(resultClose.ok, true); assert.equal(resultClose.closeout.cost.amount, null)
+  assert.equal((await svc.status(h.store)).activeRoundId, null)
+  await assert.rejects(h.controller.beforeRequest(h.plan.agent, h.plan.signal), e => e.code === 'ROUND_CLOSED' || e.code === 'RESUME_BLOCKED')
+})
+test('force approval covers the presented counts, not later failures', async t => {
+  const h = await harness({ answers: { answers: [{ id: 'gate', selected: ['批准'] }] } }); t.after(() => h.close())
+  const { work, result } = await h.spawnWork(); await evidence(h, work)
+  for (let i = 0; i < 3; i++) await svc.recordFailure(h.store, work, { kind: 'test', signature: 'fixture-stable', detail: 'known failing stand-in' })
+  let shownQuestion
+  h.services.userQuestions.ask = async request => { shownQuestion = request.questions[0].question; return { answers: [{ id: 'gate', selected: ['批准'] }] } }
+  const gate = await svc.askGate(h.ctx, h.store, h.plan, { kind: 'force', classification: 'new-authority', question: '批准按当前三次失败部分收尾？',
+    change: '仅授权当前失败计数的部分收尾', originalAuthorization: '固定失败上限', whyNotCovered: '已达上限，需要明确的收尾例外' })
+  assert.equal(gate.gate.approved, true)
+  assert.equal(gate.gate.authorizedCounts.failures['fixture-stable'], 3)
+  assert.ok(shownQuestion.includes(JSON.stringify(gate.gate.authorizedCounts)))
+  assert.equal(gate.gate.question, shownQuestion)
+  await svc.recordFailure(h.store, work, { kind: 'test', signature: 'fixture-stable' })
+  await h.complete(result.childId)
+  await assert.rejects(svc.closeRound(h.store, h.plan, { closeout }), e => e.code === 'CLOSEOUT_REJECTED' && /current counts/.test(e.message))
+})

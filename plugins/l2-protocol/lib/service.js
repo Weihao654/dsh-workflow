@@ -1,550 +1,275 @@
-// Round state machine (P0).
-//
-// The six-step protocol is enforced here, not in a prompt: the single T0,
-// per-signature failure counting, evidence layers bound to both a role and the
-// T0, force-only escalation past a limit, six checks before a round may close,
-// and an audit copy on disk. tools.js is a thin wrapper over these functions.
-
-import { execFile } from 'node:child_process'
+// Round facts and admission rules. Runtime evidence never expands a role's claim.
 import { randomUUID } from 'node:crypto'
-import { promisify } from 'node:util'
-
-const runFile = promisify(execFile)
-
+import { ChainError, fail } from './errors.js'
+import { serviceOf } from './host.js'
+import { aggregate, assertAdmissible, assertMember, briefStatus, budgetOf, freezeDeadline,
+  initRuntime, iso, roundOf, usageTotals } from './runtime.js'
+export { ChainError, budgetOf }
 export const LIMITS = { testFailures: 3, fixes: 2, reruns: 2, restarts: 3 }
-
-export const DEFAULT_BUDGET = {
-  tokens: 0,
-  fixes: LIMITS.fixes,
-  reruns: LIMITS.reruns,
-  restarts: LIMITS.restarts,
-}
-
-// Which role may write which evidence layer. This is the "分层证据" rule: a
-// role can never widen its own claim into another layer.
-export const LAYER_ROLES = {
-  command: ['work', 'code'],
-  artifact: ['work', 'code'],
-  'self-report': ['plan', 'work', 'code', 'review'],
-  review: ['review'],
-}
-
+export const DEFAULT_BUDGET = { tokens: 0, fixes: 2, reruns: 2, restarts: 3, wallMinutes: 90, outputCap: 2048 }
+export const LAYER_ROLES = { command: ['work', 'code'], artifact: ['work', 'code'],
+  'self-report': ['plan', 'work', 'code', 'review'], review: ['review'] }
 export const GATE_KINDS = ['scope', 'budget', 'rule', 'accept', 'force']
-
-const REJECTED = /^(拒绝|不行|不批准|驳回|reject|denied|no)$/i
-
-export class ChainError extends Error {
-  constructor(code, message, extra) {
-    super(message)
-    this.name = 'ChainError'
-    this.code = code
-    this.extra = extra
-  }
-}
-
-function fail(code, message, extra) {
-  throw new ChainError(code, message, extra)
-}
-
-function nowIso() {
-  return new Date().toISOString()
-}
-
-function shortId(prefix) {
-  return `${prefix}-${randomUUID().slice(0, 8)}`
-}
-
-/** Resolve the round by id, or the active one. Throws NO_ROUND when there is none. */
-function roundOf(state, roundId) {
-  const id = roundId ?? state.activeRoundId
-  if (!id) fail('NO_ROUND', '当前没有轮次。plan 先调用 chain_open_round 开一轮。')
-  const round = state.rounds[id]
-  if (!round) fail('NO_ROUND', `找不到轮次 ${id}。`)
-  return round
-}
-
-function assertOpen(round) {
-  if (round.closedAt) fail('ROUND_CLOSED', `第 ${round.id} 轮已在 ${round.closedAt} 关闭，改事实请开新一轮。`)
-}
-
-function budgetOf(round) {
-  return {
-    tokens: Math.max(0, Number(round.budget?.tokens ?? 0)),
-    testFailures: Math.max(1, Number(round.budget?.testFailures ?? LIMITS.testFailures)),
-    fixes: Math.max(1, Number(round.budget?.fixes ?? LIMITS.fixes)),
-    reruns: Math.max(1, Number(round.budget?.reruns ?? LIMITS.reruns)),
-    restarts: Math.max(1, Number(round.budget?.restarts ?? LIMITS.restarts)),
-  }
-}
-
+const shortId = prefix => `${prefix}-${randomUUID().slice(0, 8)}`
+function assertOpen(round) { if (round.closedAt) fail('ROUND_CLOSED', 'This round is closed; open a new one for a new objective.') }
+function member(state, round, exec, allowStopped = false) { return assertMember(state, round, exec, { allowStopped }) }
 function validatePayload(layer, payload) {
-  if (!payload || typeof payload !== 'object') fail('BAD_ARGS', `layer=${layer} 需要 payload 对象。`)
-  if (layer === 'command') {
-    if (typeof payload.command !== 'string' || !payload.command.trim())
-      fail('BAD_ARGS', 'command 证据需要 {command, exitCode}：命令原文不能省。')
-    if (typeof payload.exitCode !== 'number')
-      fail('BAD_ARGS', 'command 证据需要数字 exitCode；没跑过的命令不算证据。')
-    return
-  }
-  if (layer === 'artifact') {
-    if (typeof payload.path !== 'string' || !payload.path.trim()) fail('BAD_ARGS', 'artifact 证据需要 {path}。')
-    if (payload.bytes !== undefined && typeof payload.bytes !== 'number')
-      fail('BAD_ARGS', 'artifact.bytes 必须是数字。')
-    return
-  }
-  if (layer === 'self-report') {
-    if (typeof payload.text !== 'string' || !payload.text.trim()) fail('BAD_ARGS', 'self-report 证据需要 {text}。')
-    return
-  }
-  if (layer === 'review') {
-    if (!['pass', 'fail', 'partial'].includes(payload.verdict))
-      fail('BAD_ARGS', 'review 证据需要 verdict = pass | fail | partial。')
-    if (!Array.isArray(payload.scope)) fail('BAD_ARGS', 'review 证据需要 scope 数组（通过范围）。')
-    if (!Array.isArray(payload.uncovered) || payload.uncovered.length === 0)
-      fail('BAD_ARGS', 'review 证据需要非空 uncovered 数组；没有未覆盖项就写 ["无"]。')
-  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('BAD_ARGS', 'Evidence needs an object payload.')
+  if (layer === 'command' && (!String(payload.command ?? '').trim() || !Number.isInteger(payload.exitCode)))
+    fail('BAD_ARGS', 'Command evidence requires the actual command and integer exitCode.')
+  if (layer === 'artifact' && !String(payload.path ?? '').trim()) fail('BAD_ARGS', 'Artifact evidence requires a path.')
+  if (layer === 'self-report' && !String(payload.text ?? '').trim()) fail('BAD_ARGS', 'Self-report requires text.')
+  if (layer === 'review' && (!['pass', 'fail', 'partial'].includes(payload.verdict) || !Array.isArray(payload.scope) ||
+      !Array.isArray(payload.uncovered) || !payload.uncovered.length)) fail('BAD_ARGS', 'Review requires verdict, scope and non-empty uncovered.')
 }
-
-const textOf = (chunk) => String(chunk?.text ?? '')
-const isTruncated = (chunk) => chunk?.truncated === true || chunk?.spilled === true
-
-async function gitOutput(ctx, cwd, args) {
-  const subprocess = ctx?.subprocess
-  if (subprocess && typeof subprocess.spawn === 'function') {
-    try {
-      const handle = subprocess.spawn({
-        argv: ['git', ...args],
-        cwd,
-        stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 65536 } },
-        graceMs: 5000,
-      })
-      await handle?.waitForExit?.()
-      const chunk = handle?.collected?.stdout
-      const body = chunk && typeof chunk.readFrom === 'function' ? chunk.readFrom(0) : chunk
-      const exitCode = handle?.control?.exitCode ?? handle?.collected?.exitCode
-      if (typeof exitCode === 'number' && exitCode !== 0) return null
-      if (isTruncated(body)) return null
-      return textOf(body)
-    } catch {
-      return null
-    }
+// Fixed local Git queries only. Disable command-capable callbacks, optional
+// index writes and paging; never evaluate repository filter command strings.
+const GIT_READ_FLAGS = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'core.untrackedCache=false']
+async function gitOutput(ctx, cwd, args, exec) {
+  const subprocess = serviceOf(ctx, 'subprocess')
+  if (!subprocess?.spawn) fail('BASELINE_UNAVAILABLE', 'No inspected subprocess provider; missing Git facts are not a no-git baseline.')
+  const timeout = AbortSignal.timeout(5000)
+  const signal = exec?.signal ? AbortSignal.any([timeout, exec.signal]) : timeout
+  signal.throwIfAborted()
+  if (exec?.controller) {
+    const found = await exec.controller.forSession(exec.sessionId)
+    if (!found) fail('BASELINE_UNAVAILABLE', 'Git query has no controlled execution binding.')
+    const execution = found.store.snapshot().rounds[found.identity.roundId]?.executions[found.identity.executionId]
+    if (!execution) fail('BASELINE_UNAVAILABLE', 'Git query lost its exact execution binding.')
+    exec.controller.assertLiveAdmission(found.store, execution)
   }
+  const handle = subprocess.spawn({ argv: ['git', ...GIT_READ_FLAGS, ...args], cwd, signal, graceMs: 1000,
+    stdio: { stdin: 'ignore', stdout: { maxBytes: 1_048_576 }, stderr: { maxBytes: 65536 } } })
+  const result = await handle.done
+  if (await handle.waitForExit() !== true) fail('BASELINE_UNAVAILABLE', 'Git process-range exit proof unavailable.')
+  const stdout = handle.collected.stdout.readFrom(0), stderr = handle.collected.stderr.readFrom(0)
+  if (stdout.lossy || stderr.lossy) fail('BASELINE_UNAVAILABLE', 'Git output was truncated.')
+  return { exitCode: result.exitCode, stdout: String(stdout.text ?? ''), stderr: String(stderr.text ?? '') }
+}
+async function gitFacts(ctx, cwd, exec) {
   try {
-    const { stdout } = await runFile('git', args, { cwd, timeout: 5000, windowsHide: true, maxBuffer: 1 << 20 })
-    return stdout
-  } catch {
-    return null
+    const head = await gitOutput(ctx, cwd, ['rev-parse', 'HEAD'], exec)
+    if (head.exitCode !== 0) {
+      if (/not a git repository/i.test(head.stderr)) return { mode: 'no-git', commit: null, dirty: null }
+      fail('BASELINE_UNAVAILABLE', `Git baseline failed: ${head.stderr.slice(0, 500)}`)
+    }
+    const config = await gitOutput(ctx, cwd, ['config', '--null', '--name-only', '--get-regexp', '^filter\\..*\\.(clean|process|smudge|required)$'], exec)
+    if (![0, 1].includes(config.exitCode)) fail('BASELINE_UNAVAILABLE', 'Cannot inspect Git filter callbacks safely.')
+    const filterFlags = []
+    for (const key of config.stdout.split('\0').filter(Boolean)) {
+      if (!/^filter\..*\.(clean|process|smudge|required)$/i.test(key)) fail('BASELINE_UNAVAILABLE', 'Unexpected Git filter configuration key.')
+      filterFlags.push('-c', `${key}=${/\.required$/i.test(key) ? 'false' : ''}`)
+    }
+    const status = await gitOutput(ctx, cwd, [...filterFlags, 'status', '--porcelain', '--ignore-submodules=all'], exec)
+    if (status.exitCode !== 0 || !head.stdout.trim()) fail('BASELINE_UNAVAILABLE', 'Git did not return complete baseline facts.')
+    return { mode: 'git', commit: head.stdout.trim(), dirty: status.stdout.trim().length > 0,
+      callbacksDisabled: true, filterOverrides: filterFlags.length / 2, dirtyCoverage: 'superproject-only; filters disabled' }
+  } catch (error) {
+    if (error instanceof ChainError) throw error
+    fail('BASELINE_UNAVAILABLE', `Cannot establish T0: ${error.message}`)
   }
 }
-
-/** T0 facts, produced by this plugin running git itself — never by the model's claim. */
-async function gitFacts(ctx, cwd) {
-  const head = await gitOutput(ctx, cwd, ['rev-parse', 'HEAD'])
-  const status = await gitOutput(ctx, cwd, ['status', '--porcelain'])
-  if (head === null || status === null) return { mode: 'no-git', commit: null, dirty: null }
-  return { mode: 'git', commit: head.trim() || null, dirty: status.trim().length > 0 }
-}
-
-// 1) 开轮 -------------------------------------------------------------------
-
 export async function openRound(store, exec, args = {}) {
   const goal = String(args.goal ?? '').trim()
-  if (!goal) fail('BAD_ARGS', 'goal 必填：一句话写清本轮要达成什么，之后按它验收。')
-  const wanted = args.budget ?? {}
-  return store.mutate((state) => {
-    if (state.activeRoundId) {
-      const active = state.rounds[state.activeRoundId]
-      if (active && !active.closedAt)
-        fail(
-          'ROUND_ALREADY_OPEN',
-          `第 ${active.id} 轮还没关闭（目标：${active.goal}）。先 chain_close_round，或 chain_status 看它卡在哪。`,
-        )
-    }
-    const id = shortId('R')
-    const budget = {
-      tokens: Math.max(0, Number(wanted.tokens ?? DEFAULT_BUDGET.tokens)),
-      fixes: Math.max(1, Number(wanted.fixes ?? DEFAULT_BUDGET.fixes)),
-      reruns: Math.max(1, Number(wanted.reruns ?? DEFAULT_BUDGET.reruns)),
-      restarts: Math.max(1, Number(wanted.restarts ?? DEFAULT_BUDGET.restarts)),
-    }
-    const round = {
-      id,
-      goal,
-      openedAt: nowIso(),
-      openedBy: { sessionId: exec.sessionId ?? 'unknown', agentPreset: exec.preset ?? null },
-      budget,
-      counters: { fixes: 0, reruns: 0, restarts: 0 },
-      failures: {},
-      evidence: [],
-      gates: [],
-      baseline: null,
-      closeout: null,
-      closedAt: null,
-    }
-    state.rounds[id] = round
-    state.activeRoundId = id
-    return {
-      roundId: id,
-      goal,
-      budget,
-      limits: LIMITS,
-      next: '第 2 步：work 用 chain_freeze_baseline 冻结唯一 T0，然后才允许实施。',
-    }
+  if (!goal) fail('BAD_ARGS', 'A round needs an acceptance objective.')
+  if (exec.role !== 'plan' || !exec.isRoot || !exec.sessionId) fail('ROLE_DENIED', 'Only the actual root plan may open a round.')
+  const budget = budgetOf({ budget: args.budget ?? {} })
+  return store.mutate(state => {
+    if (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt) fail('ROUND_ALREADY_OPEN', 'Close the existing round; do not reset its deadline or usage.')
+    const id = shortId('R'), round = { id, goal, scope: String(args.scope ?? goal), openedAt: iso(),
+      openedBy: { sessionId: exec.sessionId, agentPreset: exec.preset }, budget,
+      counters: { fixes: 0, reruns: 0, restarts: 0 }, failures: {}, evidence: [], gates: [], baseline: null, closeout: null, closedAt: null }
+    initRuntime(state, round, exec)
+    state.rounds[id] = round; state.activeRoundId = id
+    return { roundId: id, goal, budget, limits: LIMITS,
+      next: 'Dispatch the existing work coordinator; freeze one T0 before code, review or compute.' }
   })
 }
-
-// 2) 冻结唯一 T0 ------------------------------------------------------------
-
 export async function freezeBaseline(ctx, store, exec, args = {}) {
-  const facts = await gitFacts(ctx, exec.cwd)
-  return store.mutate((state) => {
-    const round = roundOf(state, args.roundId)
-    assertOpen(round)
-    if (round.baseline)
-      fail(
-        'BASELINE_ALREADY_FROZEN',
-        `本轮 T0 已冻结在 ${round.baseline.t0Id}（commit ${round.baseline.commit ?? 'none'}）。T0 唯一，不重冻；换了基线就要开新一轮。`,
-      )
-    round.baseline = {
-      t0Id: shortId('T0'),
-      commit: facts.commit,
-      dirty: facts.dirty,
-      mode: facts.mode,
-      frozenAt: nowIso(),
-      frozenBySession: exec.sessionId ?? 'unknown',
-    }
-    return {
-      roundId: round.id,
-      baseline: round.baseline,
-      next:
-        facts.mode === 'git'
-          ? 'T0 已钉住。之后的每条证据都会绑定这个 t0Id；全部实施基于它，不中途换基线。'
-          : '项目不是 git 仓库，T0 只能记 no-git：证据照常绑定本轮，但无法用 commit 证明基线。收尾时 version.commit 写 "(no-git)"。',
-    }
+  await store.read(state => {
+    const round = roundOf(state, args.roundId); member(state, round, exec); assertAdmissible(round)
+    if (round.baseline) fail('BASELINE_ALREADY_FROZEN', 'The original T0 is immutable.')
   })
+  const facts = await gitFacts(ctx, exec.cwd, exec)
+  const result = await store.mutate(state => {
+    const round = roundOf(state, args.roundId); member(state, round, exec); assertAdmissible(round)
+    if (round.baseline) fail('BASELINE_ALREADY_FROZEN', 'The original T0 is immutable.')
+    round.baseline = { t0Id: shortId('T0'), ...facts, frozenAt: iso(), frozenBySession: exec.sessionId }
+    round.control.phase = 'implementation'
+    freezeDeadline(round)
+    return { roundId: round.id, baseline: round.baseline, time: round.time }
+  })
+  if (exec.controller) await exec.controller.attach(store, exec)
+  return result
 }
-
-// 2b) 核对基线 --------------------------------------------------------------
-
 export async function checkBaseline(ctx, store, exec, args = {}) {
-  const facts = await gitFacts(ctx, exec.cwd)
-  return store.read((state) => {
+  const facts = await gitFacts(ctx, exec.cwd, exec)
+  return store.read(state => {
     const round = roundOf(state, args.roundId)
-    if (!round.baseline) fail('NO_BASELINE', '本轮还没有 T0。work 先 chain_freeze_baseline。')
-    const t0 = round.baseline
-    const commitChanged = facts.commit !== t0.commit
-    const dirty = facts.dirty === true
-    return {
-      roundId: round.id,
-      t0: { t0Id: t0.t0Id, commit: t0.commit, dirty: t0.dirty, mode: t0.mode, frozenAt: t0.frozenAt },
-      now: facts,
-      commitChanged,
-      dirty,
-      verdict: commitChanged ? 'baseline-moved' : dirty ? 'baseline-dirty' : 'clean',
-      note: commitChanged
-        ? 'HEAD 与本轮 T0 不一致：要么有人换了基线，要么这些证据不是同一轮的。先停下核对。'
-        : dirty
-          ? '工作区相对 T0 是脏的：这可能是本轮改动，但交付前必须交代改了什么。'
-          : '工作区与 T0 一致。',
-    }
+    if (!round.baseline) fail('NO_BASELINE', 'Freeze the original T0 first.')
+    const commitChanged = facts.commit !== round.baseline.commit
+    return { roundId: round.id, t0: round.baseline, now: facts, commitChanged, dirty: facts.dirty,
+      verdict: commitChanged ? 'baseline-moved' : facts.dirty ? 'baseline-dirty' : 'clean' }
   })
 }
-
-// 3) 限定修正：按签名累计 ----------------------------------------------------
-
-const COUNTER_KEY = { fix: 'fixes', rerun: 'reruns', restart: 'restarts' }
-
-export async function recordFailure(store, exec, args = {}) {
-  const kind = String(args.kind ?? '')
-  if (!['test', 'fix', 'rerun', 'restart'].includes(kind)) fail('BAD_ARGS', 'kind 必须是 test | fix | rerun | restart。')
-  const signature = String(args.signature ?? (kind === 'test' ? '' : 'full')).trim()
-  if (kind === 'test' && !signature)
-    fail('BAD_ARGS', 'kind=test 必须带 signature（例如 pytest::test_login），否则认不出"同一个测试"。')
-  const detail = args.detail === undefined ? undefined : String(args.detail).slice(0, 500)
-  return store.mutate((state) => {
-    const round = roundOf(state, args.roundId)
-    assertOpen(round)
-    const limits = budgetOf(round)
-
-    let signatureCount = null
-    if (kind === 'test') {
-      const row = round.failures[signature] ?? { signature, count: 0, firstAt: nowIso(), lastAt: nowIso() }
-      row.count += 1
-      row.lastAt = nowIso()
-      if (detail) row.lastDetail = detail
-      round.failures[signature] = row
-      signatureCount = row.count
-    } else {
-      const key = COUNTER_KEY[kind]
-      round.counters[key] = (round.counters[key] ?? 0) + 1
-    }
-
-    let exceeded = null
-    if (kind === 'test' && signatureCount >= limits.testFailures) exceeded = 'test'
-    if (round.counters.fixes >= limits.fixes) exceeded = exceeded ?? 'fix'
-    if (round.counters.reruns >= limits.reruns) exceeded = exceeded ?? 'rerun'
-    if (round.counters.restarts >= limits.restarts) exceeded = exceeded ?? 'restart'
-
-    return {
-      roundId: round.id,
-      kind,
-      signature,
-      signatureCount,
-      counters: { ...round.counters },
-      limits,
-      exceeded,
-      next: exceeded
-        ? `已到上限（${exceeded}）：停手。要么缩小范围，要么让 plan 用 chain_gate kind=force 拿到用户批准才能继续；在此之前本轮无法关闭。`
-        : '计数已记录，继续限定修正。',
-    }
-  })
-}
-
-// 4) 分层证据 ---------------------------------------------------------------
-
-export async function recordEvidence(store, exec, args = {}) {
-  const layer = String(args.layer ?? '')
-  if (!LAYER_ROLES[layer]) fail('BAD_ARGS', `layer 必须是 ${Object.keys(LAYER_ROLES).join(' / ')}。`)
-  const allowed = LAYER_ROLES[layer]
-  if (!allowed.includes(exec.role))
-    fail(
-      'EVIDENCE_LAYER_MISMATCH',
-      `layer=${layer} 只有 ${allowed.join(' / ')} 能写，当前角色是 ${exec.role ?? 'unknown'}。证据分层不能互相扩大：谁做的谁写。`,
-    )
-  const payload = args.payload
-  validatePayload(layer, payload)
-  return store.mutate((state) => {
-    const round = roundOf(state, args.roundId)
-    assertOpen(round)
-    if (!round.baseline) fail('NO_BASELINE', '本轮还没有 T0，证据无法绑定基线。work 先 chain_freeze_baseline。')
-    const evidence = {
-      id: `${round.id}#e${round.evidence.length + 1}`,
-      roundId: round.id,
-      t0Id: round.baseline.t0Id,
-      layer,
-      authorRole: exec.role,
-      authorSession: exec.sessionId ?? 'unknown',
-      at: nowIso(),
-      payload,
-    }
-    round.evidence.push(evidence)
-    const byLayer = round.evidence.reduce((acc, item) => ({ ...acc, [item.layer]: (acc[item.layer] ?? 0) + 1 }), {})
-    return { roundId: round.id, evidence, evidenceCount: round.evidence.length, byLayer }
-  })
-}
-
-// 5) 门禁 -------------------------------------------------------------------
-
-export async function askGate(ctx, store, exec, args = {}) {
-  const question = String(args.question ?? '').trim()
-  if (!question) fail('BAD_ARGS', 'question 必填：门禁是为了让用户拍板，不是让人猜。')
-  const kind = String(args.kind ?? 'accept')
-  if (!GATE_KINDS.includes(kind)) fail('BAD_ARGS', `kind 必须是 ${GATE_KINDS.join(' / ')}。`)
-  const roundId = await store.read((state) => roundOf(state, args.roundId).id)
-
-  if (!exec.isRoot) {
-    return {
-      ok: false,
-      code: 'ESCALATE_TO_PARENT',
-      roundId,
-      kind,
-      question,
-      next: '子代理问不了人（宿主只允许根 agent 弹卡片）。把这个问题和证据带回 plan，让根 agent 用 chain_gate 问用户。',
-    }
-  }
-
-  const questions = ctx?.userQuestions
-  if (!questions || typeof questions.ask !== 'function')
-    fail('NO_USER_QUESTIONS', '当前会话没有 userQuestions 服务，门禁弹不出卡片。把问题写进回复，等用户回答后再继续。')
-
-  const item = { id: 'gate', question }
-  if (args.detail) item.detail = String(args.detail)
-  if (args.header) item.header = String(args.header)
-  if (Array.isArray(args.options) && args.options.length)
-    item.options = args.options.map((option) => ({
-      label: String(option?.label ?? ''),
-      ...(option?.description ? { description: String(option.description) } : {}),
-    }))
-
-  let answer
-  try {
-    answer = await questions.ask({ agent: exec.agent, questions: [item], items: [item] })
-  } catch (err) {
-    fail('GATE_FAILED', `门禁没拿到用户回答（${err?.code ?? 'error'}）：${err?.message ?? String(err)}`, {
-      reason: err?.code ?? null,
-    })
-  }
-
-  const answers = Array.isArray(answer?.answers) ? answer.answers : []
-  const first = answers.find((entry) => entry?.id === 'gate') ?? answers[0] ?? {}
-  const selected = Array.isArray(first.selected) ? first.selected : []
-  const custom = typeof first.custom === 'string' ? first.custom.trim() : ''
-  const decision = custom || selected.join(' / ') || '无回答'
-  const approved = !REJECTED.test(decision)
-
-  return store.mutate((state) => {
-    const round = roundOf(state, roundId)
-    assertOpen(round)
-    const gate = {
-      id: `${round.id}#g${round.gates.length + 1}`,
-      roundId: round.id,
-      kind,
-      question,
-      detail: item.detail ?? null,
-      askedByRole: exec.role,
-      askedBySession: exec.sessionId ?? 'unknown',
-      at: nowIso(),
-      decision,
-      approved,
-    }
-    round.gates.push(gate)
-    return {
-      ok: true,
-      roundId: round.id,
-      gate,
-      next: approved ? '用户已批准，按批准的边界继续。' : '用户没有批准：不要绕过，改方案或缩小范围再问。',
-    }
-  })
-}
-
-// 6) 交付并关闭 -------------------------------------------------------------
-
-function exceededList(round) {
-  const limits = budgetOf(round)
-  const out = []
-  for (const row of Object.values(round.failures ?? {}))
-    if (row.count >= limits.testFailures) out.push(`test:${row.signature} ${row.count}/${limits.testFailures}`)
-  if (round.counters.fixes >= limits.fixes) out.push(`fix ${round.counters.fixes}/${limits.fixes}`)
-  if (round.counters.reruns >= limits.reruns) out.push(`rerun ${round.counters.reruns}/${limits.reruns}`)
-  if (round.counters.restarts >= limits.restarts) out.push(`restart ${round.counters.restarts}/${limits.restarts}`)
+export function exceededList(round) {
+  const limits = budgetOf(round), out = []
+  for (const row of Object.values(round.failures ?? {})) if (row.count >= limits.testFailures) out.push(`test:${row.signature} ${row.count}/${limits.testFailures}`)
+  for (const [kind, key] of Object.entries({ fix: 'fixes', rerun: 'reruns', restart: 'restarts' }))
+    if (round.counters[key] >= limits[key]) out.push(`${kind} ${round.counters[key]}/${limits[key]}`)
   return out
 }
-
+export async function recordFailure(store, exec, args = {}) {
+  const kind = String(args.kind ?? ''), key = { fix: 'fixes', rerun: 'reruns', restart: 'restarts' }[kind]
+  if (kind !== 'test' && !key) fail('BAD_ARGS', 'kind must be test/fix/rerun/restart.')
+  const signature = String(args.signature ?? (kind === 'test' ? '' : 'full')).trim()
+  if (!signature) fail('BAD_ARGS', 'A test failure needs a stable signature.')
+  return store.mutate(state => {
+    const round = roundOf(state, args.roundId); assertOpen(round); member(state, round, exec)
+    let signatureCount = null
+    if (kind === 'test') {
+      const row = round.failures[signature] ?? { signature, count: 0, firstAt: iso() }
+      row.count++; row.lastAt = iso(); row.lastDetail = String(args.detail ?? '').slice(0, 500)
+      round.failures[signature] = row; signatureCount = row.count
+    } else round.counters[key]++
+    const exceeded = exceededList(round).length ? (signatureCount >= budgetOf(round).testFailures ? 'test' : kind) : null
+    if (exceeded) round.control.limitHold = true
+    return { roundId: round.id, kind, signature, signatureCount, exceeded, counters: round.counters, limits: budgetOf(round) }
+  })
+}
+export async function recordEvidence(store, exec, args = {}) {
+  const layer = String(args.layer ?? '')
+  if (!LAYER_ROLES[layer]) fail('BAD_ARGS', 'Unknown evidence layer.')
+  if (!LAYER_ROLES[layer].includes(exec.role)) fail('EVIDENCE_LAYER_MISMATCH', `Only ${LAYER_ROLES[layer].join('/')} can record ${layer}.`)
+  validatePayload(layer, args.payload)
+  return store.mutate(state => {
+    const round = roundOf(state, args.roundId); assertOpen(round); const author = member(state, round, exec, true)
+    if (!round.baseline) fail('NO_BASELINE', 'Evidence needs the original T0.')
+    const evidence = { id: `${round.id}#e${round.evidence.length + 1}`, roundId: round.id, t0Id: round.baseline.t0Id,
+      layer, authorRole: exec.role, authorSession: exec.sessionId, executionId: author.id, generation: author.generation,
+      at: iso(), payload: args.payload }
+    round.evidence.push(evidence)
+    return { roundId: round.id, evidence, evidenceCount: round.evidence.length,
+      byLayer: round.evidence.reduce((out, e) => ({ ...out, [e.layer]: (out[e.layer] ?? 0) + 1 }), {}) }
+  })
+}
+export function gateAdmission(round, args) {
+  const classification = args.classification ?? 'unspecified'
+  if (classification === 'closeout' && args.kind === 'accept') {
+    if (args.stage !== 'closeout') return { admitted: false, disposition: 'Only final closeout may request acceptance.' }
+    if (!round.evidence.some(e => e.layer === 'review')) return { admitted: false, disposition: 'Obtain the independent review first; do not substitute user approval.' }
+    return { admitted: true }
+  }
+  if (['unchanged-premise', 'authorized-technical', 'blocker'].includes(classification)) return {
+    admitted: false, blocker: classification === 'blocker', disposition: classification === 'unchanged-premise'
+      ? 'Cite the still-valid original authorization/premise; NOT_GATED is not new approval.'
+      : classification === 'authorized-technical' ? 'work handles this within existing authority.'
+        : 'Pause the affected step, preserve its evidence, continue independent authorized work.' }
+  if (!['scope', 'budget', 'business-rule', 'new-authority'].includes(classification))
+    return { admitted: false, disposition: 'No new user decision was established; assess the issue, do not ignore it or treat it as safe.' }
+  if (args.kind === 'accept') return { admitted: false, disposition: 'accept is reserved for final closeout, not a development checkpoint.' }
+  for (const name of ['change', 'originalAuthorization', 'whyNotCovered']) if (!String(args[name] ?? '').trim())
+    return { admitted: false, disposition: `Supply the specific ${name}; do not make the user re-review unchanged premises.` }
+  return { admitted: true }
+}
+function forceCovers(round, gate) {
+  if (!gate.approved || gate.kind !== 'force' || !gate.authorizedCounts) return false
+  const limits = budgetOf(round), snapshot = gate.authorizedCounts
+  for (const key of ['fixes', 'reruns', 'restarts'])
+    if (round.counters[key] >= limits[key] && (snapshot.counters?.[key] ?? -1) < round.counters[key]) return false
+  for (const row of Object.values(round.failures))
+    if (row.count >= limits.testFailures && (snapshot.failures?.[row.signature] ?? -1) < row.count) return false
+  return true
+}
+export async function askGate(ctx, store, exec, args = {}) {
+  const question = String(args.question ?? '').trim(), kind = String(args.kind ?? 'rule')
+  if (!question || !GATE_KINDS.includes(kind)) fail('BAD_ARGS', 'Gate needs question and a valid kind.')
+  const preparation = await store.mutate(state => {
+    const round = roundOf(state, args.roundId); assertOpen(round); member(state, round, exec, true)
+    const admission = gateAdmission(round, { ...args, kind })
+    if (admission.blocker) {
+      round.control.blockers.push(`${String(args.affectedStep ?? args.stage ?? 'affected-step')}: ${question}`)
+      round.control.pausedPhases ??= {}
+      round.control.pausedPhases[String(args.affectedStep ?? args.stage ?? round.control.phase)] = question
+    }
+    return { roundId: round.id, admission, authorizedCounts: { counters: { ...round.counters },
+      failures: Object.fromEntries(Object.values(round.failures).map(row => [row.signature, row.count])) } }
+  })
+  if (!preparation.admission.admitted) return { ok: false, code: 'NOT_GATED', roundId: preparation.roundId, ...preparation.admission }
+  if (!exec.isRoot || exec.role !== 'plan') return { ok: false, code: 'ESCALATE_TO_PARENT', roundId: preparation.roundId,
+    disposition: 'Send only the concrete new decision and its evidence through the existing work to plan.' }
+  const questions = serviceOf(ctx, 'userQuestions')
+  if (!questions?.ask) fail('NO_USER_QUESTIONS', 'No user question service; no approval was recorded.')
+  const snapshotText = kind === 'force' ? JSON.stringify(preparation.authorizedCounts) : null
+  if (snapshotText?.length > 4000) fail('GATE_SNAPSHOT_TOO_LARGE', 'Force counts exceed the bounded approval prompt; no approval was requested or recorded.')
+  const displayedQuestion = snapshotText ? `${question}\n\n本次仅授权以下不可变计数快照；不重置停止、期限或token预算，后续新增失败不在此授权内：\n${snapshotText}` : question
+  const item = { id: 'gate', question: displayedQuestion, options: args.options?.length ? args.options : [{ label: '批准' }, { label: '拒绝' }] }
+  if (args.header) item.header = String(args.header)
+  let response
+  try { response = await questions.ask({ agent: exec.agent, questions: [item], items: [item] }) }
+  catch (error) { fail('GATE_FAILED', `No user decision: ${error.message}`) }
+  const answers = Array.isArray(response?.answers) ? response.answers : []
+  const first = answers.find(a => a.id === 'gate') ?? answers[0] ?? {}
+  const selected = Array.isArray(first.selected) ? first.selected : []
+  const decision = String(first.custom ?? '').trim() || selected.join(' / ') || '无回答'
+  // Ambiguous/free-form or missing answers are not an affirmative authority grant.
+  const approved = /^(批准|同意|允许|approve|approved|yes)$/i.test(decision.trim())
+  return store.mutate(state => {
+    const round = roundOf(state, preparation.roundId); assertOpen(round)
+    const gate = { id: `${round.id}#g${round.gates.length + 1}`, roundId: round.id, kind, question: displayedQuestion, originalQuestion: question,
+      classification: args.classification, change: args.change, originalAuthorization: args.originalAuthorization,
+      whyNotCovered: args.whyNotCovered, authorizedCounts: kind === 'force' ? preparation.authorizedCounts : undefined,
+      askedByRole: exec.role, askedBySession: exec.sessionId, at: iso(), decision, approved }
+    round.gates.push(gate)
+    if (approved && kind === 'force') round.control.limitHold = !forceCovers(round, gate)
+    if (args.classification === 'closeout') round.control.phase = 'closeout'
+    return { ok: true, roundId: round.id, gate, disposition: approved ? 'Only the explicitly approved change is authorized; stops/deadlines are not reset.' : 'No affirmative approval; do not bypass.' }
+  })
+}
 export async function closeRound(store, exec, args = {}) {
   const closeout = args.closeout ?? {}
-  return store.mutate(async (state) => {
-    const round = roundOf(state, args.roundId)
-    assertOpen(round)
-    const problems = []
-
-    if (!round.baseline) problems.push('本轮没有 T0：第 3 步之前必须先 chain_freeze_baseline。')
-
-    const exceeded = exceededList(round)
-    if (exceeded.length) {
-      const forced = round.gates.some((gate) => gate.kind === 'force' && gate.approved === true)
-      if (!forced)
-        problems.push(`已越限但没有任何 force 门禁记录（${exceeded.join('；')}）：先 chain_gate kind=force 拿到用户批准。`)
-    }
-
-    if (!round.evidence.some((item) => item.layer === 'command'))
-      problems.push('缺 command 证据：本轮没有任何一条真实命令记录（work/code 写）。')
-    if (!round.evidence.some((item) => item.layer === 'review'))
-      problems.push('缺 review 证据：独立终审没写结论（review 写）。')
-
-    const version = closeout.version
-    if (!version || typeof version !== 'object' || typeof version.commit !== 'string' || !version.commit.trim())
-      problems.push('closeout.version.commit 必填（非 git 项目写 "(no-git)"）。')
-    if (!['delivered', 'partial', 'blocked'].includes(closeout.result))
-      problems.push('closeout.result 必须是 delivered | partial | blocked。')
-    if (!Array.isArray(closeout.uncovered) || closeout.uncovered.length === 0)
-      problems.push('closeout.uncovered 必须非空：没有未覆盖项就写 ["无"]。')
-    if (closeout.servicesStopped !== true) problems.push('closeout.servicesStopped 必须是 true：本轮起的服务要停掉。')
-
-    if (problems.length)
-      fail('CLOSEOUT_REJECTED', `本轮还不能关闭（${problems.length} 项不满足）：\n- ${problems.join('\n- ')}`, {
-        problems,
-        exceeded,
-      })
-
-    const cost =
-      typeof args.costOverride === 'number'
-        ? { tokens: Math.max(0, args.costOverride), estimate: false, note: args.costNote ?? '人工覆盖' }
-        : {
-            tokens: Math.max(0, Number(closeout.cost?.tokens ?? 0)),
-            estimate: closeout.cost?.estimate !== false,
-            note: closeout.cost?.note ?? (closeout.cost ? undefined : '未提供费用数据'),
-          }
-
-    const final = {
-      version: {
-        commit: version.commit.trim(),
-        ...(version.tag ? { tag: String(version.tag) } : {}),
-        ...(version.artifact ? { artifact: String(version.artifact) } : {}),
-      },
-      result: closeout.result,
-      uncovered: closeout.uncovered.map(String),
-      cost,
-      servicesStopped: true,
-    }
-
-    round.closeout = final
-    round.closedAt = nowIso()
+  return store.mutate(async state => {
+    const round = roundOf(state, args.roundId); assertOpen(round); const caller = member(state, round, exec, true)
+    if (!caller.root || exec.role !== 'plan') fail('ROLE_DENIED', 'Only the owning root plan closes the round.')
+    const problems = [], exceeded = exceededList(round)
+    if (!round.baseline) problems.push('No original T0.')
+    if (exceeded.length && !round.gates.some(g => forceCovers(round, g))) problems.push('Failure limits exceeded without a force decision covering the current counts.')
+    if (!round.evidence.some(e => e.layer === 'command')) problems.push('Missing command evidence.')
+    if (!round.evidence.some(e => e.layer === 'review')) problems.push('Missing independent review evidence.')
+    const others = Object.values(round.executions ?? {}).filter(e => e.id !== caller.id)
+    if (others.some(e => e.agentQuiescent !== true || e.jobsQuiescent !== true) || round.control.inventoryUnknown)
+      problems.push('Agent/job exits remain unconfirmed; servicesStopped is not process proof.')
+    if (!String(closeout.version?.commit ?? '').trim()) problems.push('version.commit is required (or "(no-git)").')
+    if (!['delivered', 'partial', 'blocked'].includes(closeout.result)) problems.push('Invalid result.')
+    if (!Array.isArray(closeout.uncovered) || !closeout.uncovered.length) problems.push('Non-empty uncovered is required.')
+    if (closeout.servicesStopped !== true) problems.push('servicesStopped must be true in addition to actual exit proof.')
+    if (problems.length) fail('CLOSEOUT_REJECTED', `Cannot close:\n- ${problems.join('\n- ')}`, { problems, exceeded })
+    const usage = usageTotals(round)
+    const final = { version: closeout.version, result: closeout.result, uncovered: closeout.uncovered.map(String),
+      servicesStopped: true, usage, cost: usage.cost }
+    round.closeout = final; round.closedAt = iso(); round.control.resumeBlocked = true
     if (state.activeRoundId === round.id) state.activeRoundId = null
-
     const auditPath = await store.exportRound(round)
-    const layers = [...new Set(round.evidence.map((item) => item.layer))]
-    const summary = [
-      `第 ${round.id} 轮已关闭（目标：${round.goal}）`,
-      `版本：${final.version.commit}${final.version.tag ? ` (${final.version.tag})` : ''}`,
-      `结果：${final.result}`,
-      `未覆盖项：${final.uncovered.join('；')}`,
-      `费用：${final.cost.tokens} tokens${final.cost.estimate ? '（估算）' : '（人工）'}`,
-      '服务：已停',
-      `T0：${round.baseline.t0Id} @ ${round.baseline.commit ?? 'no-git'}`,
-      `证据：${round.evidence.length} 条（${layers.join(' / ') || '无'}）`,
-      `门禁：${round.gates.length} 条`,
-      `审计副本：${auditPath}`,
-    ].join('\n')
-
-    return { ok: true, roundId: round.id, summary, auditPath, closeout: final }
+    return { ok: true, roundId: round.id, auditPath, closeout: final,
+      summary: `版本：${final.version.commit}\n结果：${final.result}\n未覆盖项：${final.uncovered.join('；')}\n费用：${usage.totalTokens} known tokens; ${usage.pendingRequests} pending requests; billed cost unknown.` }
   })
 }
-
-// 看板 ----------------------------------------------------------------------
-
 export async function status(store, args = {}) {
-  return store.read((state) => {
+  return store.read(state => {
     const id = args.roundId ?? state.activeRoundId
-    if (!id) {
-      return {
-        activeRoundId: null,
-        rounds: Object.keys(state.rounds).length,
-        note: '当前没有活跃轮次。plan 用 chain_open_round 开一轮。',
-      }
-    }
-    const round = state.rounds[id]
-    if (!round) fail('NO_ROUND', `找不到轮次 ${id}。`)
-    const byLayer = round.evidence.reduce((acc, item) => ({ ...acc, [item.layer]: (acc[item.layer] ?? 0) + 1 }), {})
-    return {
-      roundId: round.id,
-      goal: round.goal,
-      activeRoundId: state.activeRoundId,
-      openedAt: round.openedAt,
-      openedBy: round.openedBy,
-      closedAt: round.closedAt ?? null,
-      baseline: round.baseline,
-      budget: budgetOf(round),
-      limits: LIMITS,
-      counters: round.counters,
-      failures: Object.values(round.failures ?? {}),
-      exceeded: exceededList(round),
-      evidence: { total: round.evidence.length, byLayer },
-      gates: round.gates.map((gate) => ({
-        id: gate.id,
-        kind: gate.kind,
-        decision: gate.decision,
-        approved: gate.approved,
-        at: gate.at,
-      })),
-      closeout: round.closeout,
-    }
+    if (!id) return { activeRoundId: null, rounds: Object.keys(state.rounds).length, note: 'No active round.' }
+    const round = roundOf(state, id)
+    if (args.detail !== 'full') return briefStatus(round)
+    return { roundId: id, activeRoundId: state.activeRoundId, goal: round.goal, scope: round.scope, openedAt: round.openedAt,
+      openedBy: round.openedBy, closedAt: round.closedAt, baseline: round.baseline, time: round.time, budget: budgetOf(round),
+      counters: round.counters, failures: round.failures, gates: round.gates, evidence: round.evidence,
+      control: { ...round.control, ...aggregate(round) }, executions: round.executions, usage: { ...usageTotals(round), ledger: round.usage },
+      agents: state.agents ?? {}, closeout: round.closeout, exceeded: exceededList(round) }
   })
 }
-
 export async function exportAudit(store, args = {}) {
-  return store.read(async (state) => {
-    const round = roundOf(state, args.roundId)
-    const auditPath = await store.exportRound(round)
-    return { roundId: round.id, auditPath, bytes: JSON.stringify(round).length }
+  return store.read(async state => {
+    const round = roundOf(state, args.roundId), auditPath = await store.exportRound(round)
+    return { roundId: round.id, auditPath, bytes: Buffer.byteLength(JSON.stringify(round)) }
   })
 }
