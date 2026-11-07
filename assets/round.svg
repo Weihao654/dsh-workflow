@@ -9,133 +9,109 @@
   </defs>
 
   <rect width="1200" height="640" rx="18" fill="#ffffff" stroke="#e2e8f0"/>
-  <text x="52" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="24" font-weight="700" fill="#0f172a">显式受控轮次：一条可核验、可关轮的证据链</text>
-  <text x="52" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" fill="#64748b">默认工作流不产生“轮次”；需要左侧证据、预算与关轮时，才用 <tspan font-family="ui-monospace, SFMono-Regular, Consolas, monospace" fill="#4f46e5">/chain-authorize</tspan> 开启一轮。</text>
+  <text x="52" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="24" font-weight="700" fill="#0f172a">显式受控轮次：一条可核验、可关轮的证据链</text>
+  <text x="52" y="80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" fill="#64748b">默认工作流不产生“轮次”；需要证据、预算与关轮时，才用 /chain-authorize 开启一轮。</text>
 
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
-    <!-- step 1 -->
-    <g filter="url(#s2)">
-      <rect x="52" y="120" width="256" height="112" rx="16" fill="#eef2ff" stroke="#818cf8" stroke-width="1.6"/>
-    </g>
-    <circle cx="84" cy="152" r="16" fill="#6366f1"/>
-    <text x="84" y="158" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">1</text>
-    <text x="112" y="158" font-size="17" font-weight="600" fill="#312e81">授权开轮</text>
-    <text x="72" y="186" font-size="12.5" fill="#4f46e5">Host 命令 /chain-authorize</text>
-    <text x="72" y="207" font-size="12" fill="#6366f1">固定目标 / 请求数 / token / 时限</text>
-    <text x="72" y="224" font-size="12" fill="#6366f1">授权后 30 分钟起算 deadline</text>
+    <!-- row 1 -->
+    <g filter="url(#s2)"><rect x="52" y="112" width="256" height="130" rx="16" fill="#eef2ff" stroke="#818cf8" stroke-width="1.6"/></g>
+    <circle cx="84" cy="144" r="15" fill="#6366f1"/>
+    <text x="84" y="150" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">1</text>
+    <text x="110" y="150" font-size="16.5" font-weight="600" fill="#312e81">授权开轮</text>
+    <text x="72" y="180" font-size="12" fill="#4f46e5">/chain-authorize（Host 命令）</text>
+    <text x="72" y="202" font-size="12" fill="#6366f1">固定目标 / 请求数 / token / 时限</text>
+    <text x="72" y="224" font-size="12" fill="#6366f1">授权即开轮，deadline 由此起算</text>
 
-    <!-- step 2 -->
-    <g filter="url(#s2)">
-      <rect x="336" y="120" width="256" height="112" rx="16" fill="#ecfeff" stroke="#67e8f9" stroke-width="1.6"/>
-    </g>
-    <circle cx="368" cy="152" r="16" fill="#06b6d4"/>
-    <text x="368" y="158" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">2</text>
-    <text x="396" y="158" font-size="17" font-weight="600" fill="#164e63">冻结 T0</text>
-    <text x="356" y="186" font-size="12.5" fill="#0e7490">work 调 chain_freeze_baseline</text>
-    <text x="356" y="207" font-size="12" fill="#0891b2">读真实 git 事实</text>
+    <g filter="url(#s2)"><rect x="336" y="112" width="256" height="130" rx="16" fill="#ecfeff" stroke="#67e8f9" stroke-width="1.6"/></g>
+    <circle cx="368" cy="144" r="15" fill="#06b6d4"/>
+    <text x="368" y="150" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">2</text>
+    <text x="394" y="150" font-size="16.5" font-weight="600" fill="#164e63">冻结 T0</text>
+    <text x="356" y="180" font-size="12" fill="#0e7490">work 调 chain_freeze_baseline</text>
+    <text x="356" y="202" font-size="12" fill="#0891b2">只读真实 git 事实</text>
     <text x="356" y="224" font-size="12" fill="#0891b2">无仓库则显式 no-git，不冒充</text>
 
-    <!-- step 3 -->
-    <g filter="url(#s2)">
-      <rect x="620" y="120" width="256" height="112" rx="16" fill="#f0fdf4" stroke="#86efac" stroke-width="1.6"/>
-    </g>
-    <circle cx="652" cy="152" r="16" fill="#22c55e"/>
-    <text x="652" y="158" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">3</text>
-    <text x="680" y="158" font-size="17" font-weight="600" fill="#166534">派发执行</text>
-    <text x="640" y="186" font-size="12.5" fill="#15803d">plan / work 调 chain_dispatch</text>
-    <text x="640" y="207" font-size="12" fill="#16a34a">work → code / review</text>
+    <g filter="url(#s2)"><rect x="620" y="112" width="256" height="130" rx="16" fill="#f0fdf4" stroke="#86efac" stroke-width="1.6"/></g>
+    <circle cx="652" cy="144" r="15" fill="#22c55e"/>
+    <text x="652" y="150" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">3</text>
+    <text x="678" y="150" font-size="16.5" font-weight="600" fill="#166534">派发执行</text>
+    <text x="640" y="180" font-size="12" fill="#15803d">plan / work 调 chain_dispatch</text>
+    <text x="640" y="202" font-size="12" fill="#16a34a">work → code / 独立 review</text>
     <text x="640" y="224" font-size="12" fill="#16a34a">子会话 + 独立上下文</text>
 
-    <!-- step 4 -->
-    <g filter="url(#s2)">
-      <rect x="904" y="120" width="244" height="112" rx="16" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.6"/>
-    </g>
-    <circle cx="936" cy="152" r="16" fill="#f59e0b"/>
-    <text x="936" y="158" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">4</text>
-    <text x="964" y="158" font-size="17" font-weight="600" fill="#78350f">真实短作业</text>
-    <text x="924" y="186" font-size="12.5" fill="#b45309">chain_compute（完整隔离）</text>
-    <text x="924" y="207" font-size="12" fill="#d97706">只读 workspace + wsl bwrap</text>
+    <g filter="url(#s2)"><rect x="904" y="112" width="256" height="130" rx="16" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.6"/></g>
+    <circle cx="936" cy="144" r="15" fill="#f59e0b"/>
+    <text x="936" y="150" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">4</text>
+    <text x="962" y="150" font-size="16.5" font-weight="600" fill="#78350f">真实短作业</text>
+    <text x="924" y="180" font-size="12" fill="#b45309">chain_compute（完整隔离才启动）</text>
+    <text x="924" y="202" font-size="12" fill="#d97706">只读 workspace · wsl bwrap</text>
     <text x="924" y="224" font-size="12" fill="#d97706">返回真实 jobId / exitCode</text>
 
-    <path d="M300 176h30" stroke="#6366f1" stroke-width="2.4" marker-end="url(#a1)"/>
-    <path d="M584 176h30" stroke="#06b6d4" stroke-width="2.4" marker-end="url(#a1)"/>
-    <path d="M868 176h30" stroke="#22c55e" stroke-width="2.4" marker-end="url(#a1)"/>
+    <path d="M308 177H330" stroke="#6366f1" stroke-width="2.2" marker-end="url(#a1)"/>
+    <path d="M592 177H614" stroke="#06b6d4" stroke-width="2.2" marker-end="url(#a1)"/>
+    <path d="M876 177H898" stroke="#22c55e" stroke-width="2.2" marker-end="url(#a1)"/>
+    <path d="M1032 246V292" stroke="#f59e0b" stroke-width="2.2" marker-end="url(#a1)"/>
 
-    <!-- step 5 -->
-    <g filter="url(#s2)">
-      <rect x="904" y="272" width="244" height="112" rx="16" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.6"/>
-    </g>
-    <circle cx="936" cy="304" r="16" fill="#a855f7"/>
-    <text x="936" y="310" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">5</text>
-    <text x="964" y="310" font-size="17" font-weight="600" fill="#581c87">命令证据</text>
-    <text x="924" y="338" font-size="12.5" fill="#7e22ce">只传 jobId，由账本/回执推导</text>
-    <text x="924" y="359" font-size="12" fill="#9333ea">绑定 receiptDigest</text>
-    <text x="924" y="376" font-size="12" fill="#9333ea">自填 command 会被拒</text>
+    <!-- row 2 (right to left) -->
+    <g filter="url(#s2)"><rect x="904" y="300" width="256" height="130" rx="16" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.6"/></g>
+    <circle cx="936" cy="332" r="15" fill="#a855f7"/>
+    <text x="936" y="338" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">5</text>
+    <text x="962" y="338" font-size="16.5" font-weight="600" fill="#581c87">命令证据</text>
+    <text x="924" y="368" font-size="12" fill="#7e22ce">只传 jobId，命令/退出码由账本推导</text>
+    <text x="924" y="390" font-size="12" fill="#9333ea">绑定 receiptDigest</text>
+    <text x="924" y="412" font-size="12" fill="#9333ea">自填“成功”会被拒绝</text>
 
-    <!-- step 6 -->
-    <g filter="url(#s2)">
-      <rect x="620" y="272" width="256" height="112" rx="16" fill="#fff7ed" stroke="#fdba74" stroke-width="1.6"/>
-    </g>
-    <circle cx="652" cy="304" r="16" fill="#fb923c"/>
-    <text x="652" y="310" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">6</text>
-    <text x="680" y="310" font-size="17" font-weight="600" fill="#7c2d12">独立评审</text>
-    <text x="640" y="338" font-size="12.5" fill="#c2410c">review 自己查、自己判</text>
-    <text x="640" y="359" font-size="12" fill="#ea580c">verdict / scope / uncovered</text>
-    <text x="640" y="376" font-size="12" fill="#ea580c">不预设 pass</text>
+    <g filter="url(#s2)"><rect x="620" y="300" width="256" height="130" rx="16" fill="#fff7ed" stroke="#fdba74" stroke-width="1.6"/></g>
+    <circle cx="652" cy="332" r="15" fill="#fb923c"/>
+    <text x="652" y="338" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">6</text>
+    <text x="678" y="338" font-size="16.5" font-weight="600" fill="#7c2d12">独立评审</text>
+    <text x="640" y="368" font-size="12" fill="#c2410c">review 自己查、自己判</text>
+    <text x="640" y="390" font-size="12" fill="#ea580c">verdict / scope / uncovered</text>
+    <text x="640" y="412" font-size="12" fill="#ea580c">不预设 pass</text>
 
-    <!-- step 7 -->
-    <g filter="url(#s2)">
-      <rect x="336" y="272" width="256" height="112" rx="16" fill="#f0f9ff" stroke="#bae6fd" stroke-width="1.6"/>
-    </g>
-    <circle cx="368" cy="304" r="16" fill="#0284c7"/>
-    <text x="368" y="310" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">7</text>
-    <text x="396" y="310" font-size="17" font-weight="600" fill="#0c4a6e">静止检查 → 关轮</text>
-    <text x="356" y="338" font-size="12.5" fill="#0369a1">agent / job 全部静止</text>
-    <text x="356" y="359" font-size="12" fill="#0284c7">回执复验（digest 未变）</text>
-    <text x="356" y="376" font-size="12" fill="#0284c7">plan 一次 chain_close_round</text>
+    <g filter="url(#s2)"><rect x="336" y="300" width="256" height="130" rx="16" fill="#f0f9ff" stroke="#bae6fd" stroke-width="1.6"/></g>
+    <circle cx="368" cy="332" r="15" fill="#0284c7"/>
+    <text x="368" y="338" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">7</text>
+    <text x="394" y="338" font-size="16.5" font-weight="600" fill="#0c4a6e">静止检查 → 关轮</text>
+    <text x="356" y="368" font-size="12" fill="#0369a1">agent / job 全部静止</text>
+    <text x="356" y="390" font-size="12" fill="#0284c7">回执逐条复验（digest 未变）</text>
+    <text x="356" y="412" font-size="12" fill="#0284c7">plan 一次 chain_close_round</text>
 
-    <!-- step 8 -->
-    <g filter="url(#s2)">
-      <rect x="52" y="272" width="256" height="112" rx="16" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.6"/>
-    </g>
-    <circle cx="84" cy="304" r="16" fill="#64748b"/>
-    <text x="84" y="310" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">8</text>
-    <text x="112" y="310" font-size="17" font-weight="600" fill="#1e293b">只读核对</text>
-    <text x="72" y="338" font-size="12.5" fill="#475569">closedAt / closeout / activeRoundId</text>
-    <text x="72" y="359" font-size="12" fill="#64748b">退出证据（不是自述）</text>
-    <text x="72" y="376" font-size="12" fill="#64748b">关轮后的请求按设计拒绝</text>
+    <g filter="url(#s2)"><rect x="52" y="300" width="256" height="130" rx="16" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.6"/></g>
+    <circle cx="84" cy="332" r="15" fill="#64748b"/>
+    <text x="84" y="338" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">8</text>
+    <text x="110" y="338" font-size="16.5" font-weight="600" fill="#1e293b">只读核对</text>
+    <text x="72" y="368" font-size="12" fill="#475569">closedAt / closeout / activeRoundId</text>
+    <text x="72" y="390" font-size="12" fill="#64748b">退出证据（不是自述）</text>
+    <text x="72" y="412" font-size="12" fill="#64748b">关轮后的请求按设计拒绝</text>
 
-    <path d="M1026 384v-30" stroke="#a855f7" stroke-width="2.4" marker-end="url(#a1)"/>
-    <path d="M904 328H888" stroke="#a855f7" stroke-width="2.4" marker-end="url(#a1)"/>
-    <path d="M620 328h-30" stroke="#fb923c" stroke-width="2.4" marker-end="url(#a1)"/>
-    <path d="M336 328h-30" stroke="#0284c7" stroke-width="2.4" marker-end="url(#a1)"/>
+    <path d="M900 365H882" stroke="#a855f7" stroke-width="2.2" marker-end="url(#a1)"/>
+    <path d="M616 365H598" stroke="#fb923c" stroke-width="2.2" marker-end="url(#a1)"/>
+    <path d="M332 365H314" stroke="#0284c7" stroke-width="2.2" marker-end="url(#a1)"/>
 
     <!-- gates -->
-    <rect x="52" y="430" width="1096" height="168" rx="16" fill="#f8fafc" stroke="#e2e8f0"/>
-    <text x="76" y="462" font-size="15" font-weight="600" fill="#334155">四道门同时成立，关轮才会成功</text>
+    <rect x="52" y="462" width="1096" height="128" rx="16" fill="#f8fafc" stroke="#e2e8f0"/>
+    <text x="76" y="492" font-size="15" font-weight="600" fill="#334155">四道门同时成立，关轮才会成功；任何一道不成立都应如实报告，而不是改门禁。</text>
 
-    <rect x="76" y="480" width="252" height="96" rx="12" fill="#ffffff" stroke="#c7d2fe"/>
-    <text x="92" y="506" font-size="14.5" font-weight="600" fill="#3730a3">预算门</text>
-    <text x="92" y="530" font-size="12" fill="#4f46e5">项目额度 + 本轮额度双上限</text>
-    <text x="92" y="551" font-size="12" fill="#4f46e5">token 是准入估算，不是硬封顶</text>
-    <text x="92" y="568" font-size="12" fill="#6366f1">已结算可能越过准入预算</text>
+    <rect x="76" y="506" width="252" height="66" rx="12" fill="#ffffff" stroke="#c7d2fe"/>
+    <text x="90" y="528" font-size="13.5" font-weight="600" fill="#3730a3">预算门</text>
+    <text x="90" y="548" font-size="11.5" fill="#4f46e5">项目额度 + 本轮额度双上限</text>
+    <text x="90" y="564" font-size="11.5" fill="#6366f1">token 为准入估算，结算可超出</text>
 
-    <rect x="344" y="480" width="252" height="96" rx="12" fill="#ffffff" stroke="#a5f3fc"/>
-    <text x="360" y="506" font-size="14.5" font-weight="600" fill="#155e75">关轮预留</text>
-    <text x="360" y="530" font-size="12" fill="#0e7490">槽位固定（grant-only，不随估算缩水）</text>
-    <text x="360" y="551" font-size="12" fill="#0e7490">token 保留单调不降</text>
-    <text x="360" y="568" font-size="12" fill="#0891b2">半额封顶；不够就诚实拒绝</text>
+    <rect x="344" y="506" width="252" height="66" rx="12" fill="#ffffff" stroke="#a5f3fc"/>
+    <text x="358" y="528" font-size="13.5" font-weight="600" fill="#155e75">关轮预留</text>
+    <text x="358" y="548" font-size="11.5" fill="#0e7490">槽位固定；token 预留单调不降</text>
+    <text x="358" y="564" font-size="11.5" fill="#0891b2">半额封顶；不够就拒绝</text>
 
-    <rect x="612" y="480" width="252" height="96" rx="12" fill="#ffffff" stroke="#fde68a"/>
-    <text x="628" y="506" font-size="14.5" font-weight="600" fill="#92400e">证据门</text>
-    <text x="628" y="530" font-size="12" fill="#b45309">命令行必须带 jobId + receiptDigest</text>
-    <text x="628" y="551" font-size="12" fill="#b45309">关轮时按原生回执逐条复验</text>
-    <text x="628" y="568" font-size="12" fill="#d97706">证据被改 → 关轮被拒</text>
+    <rect x="612" y="506" width="252" height="66" rx="12" fill="#ffffff" stroke="#fde68a"/>
+    <text x="626" y="528" font-size="13.5" font-weight="600" fill="#92400e">证据门</text>
+    <text x="626" y="548" font-size="11.5" fill="#b45309">命令行必须带 jobId + receiptDigest</text>
+    <text x="626" y="564" font-size="11.5" fill="#d97706">证据被改 → 关轮被拒</text>
 
-    <rect x="880" y="480" width="252" height="96" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
-    <text x="896" y="506" font-size="14.5" font-weight="600" fill="#166534">静止门</text>
-    <text x="896" y="530" font-size="12" fill="#15803d">其它 execution / job 必须静止</text>
-    <text x="896" y="551" font-size="12" fill="#15803d">servicesStopped 只是声明</text>
-    <text x="896" y="568" font-size="12" fill="#16a34a">不代表任何 Host 进程已退出</text>
+    <rect x="880" y="506" width="252" height="66" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <text x="894" y="528" font-size="13.5" font-weight="600" fill="#166534">静止门</text>
+    <text x="894" y="548" font-size="11.5" fill="#15803d">其它 execution / job 必须静止</text>
+    <text x="894" y="564" font-size="11.5" fill="#16a34a">servicesStopped 只是声明</text>
+
+    <text x="52" y="620" font-size="12" fill="#94a3b8">servicesStopped 不等于任何 Host 进程已退出；关轮后的下一次请求返回 ROUND_CLOSED 属设计行为。</text>
   </g>
 </svg>
