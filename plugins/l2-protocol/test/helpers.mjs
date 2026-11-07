@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { RoundStore } from '../lib/store.js'
@@ -6,13 +6,17 @@ import { ChainController } from '../lib/controller.js'
 import * as svc from '../lib/service.js'
 export const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 export async function harness(options = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'role-chain-safe-')), store = new RoundStore(dir)
+  const dir = await mkdtemp(join(tmpdir(), 'role-chain-safe-'))
+  const authorityRoot = options.authorityRoot
+    ? (typeof options.authorityRoot === 'string' ? options.authorityRoot : await mkdtemp(join(tmpdir(), 'role-chain-authority-'))) : null
+  if (authorityRoot) await mkdir(authorityRoot, { recursive: true })
+  const store = new RoundStore(dir, authorityRoot ? { authorityRoot } : {})
   const sessions = new Map(), agents = new Map(), records = new Map(), definitions = new Map(), commands = new Map(), hooks = new Map()
   const calls = { spawn: [], send: [], drain: [], interrupt: [], cancelled: [], jobs: [] }, extraControllers = []
   let jobsController = 0
   function agent(id, role, parent = null) {
     const record = { idle: deferred(), result: deferred(), dispose: deferred() }
-    const value = { id, cancel() { calls.cancelled.push(id); if (!options.holdCancel) record.idle.resolve() }, whenIdle() { return record.idle.promise } }
+    const value = { id, ctx: Object.freeze({ fixtureAgent: id }), cancel() { calls.cancelled.push(id); if (!options.holdCancel) record.idle.resolve() }, whenIdle() { return record.idle.promise } }
     sessions.set(id, { id, header: { id, agentPreset: role, cwd: dir, ...(parent ? { parentSession: parent, origin: 'subagent' } : {}) } })
     records.set(id, record); agents.set(id, value)
     return value
@@ -53,6 +57,8 @@ export async function harness(options = {}) {
   }
   const services = { subagents, jobs, sessions: { get: id => sessions.get(String(id)), list: () => [...sessions.values()] },
     agents: { get: id => agents.get(String(id)), isOwnedBy: (id, owner) => sessions.get(id)?.header.parentSession === owner.id },
+    agentPresets: { composedPreset: context => { const entry = [...agents.values()].find(value => value.ctx === context); return entry ? sessions.get(entry.id)?.header.agentPreset : undefined } },
+    sessionProjections: { stateOf: (session, key) => key === 'agentPreset' && sessions.get(session.id) === session ? session.header.agentPreset : undefined },
     workingDirectory: { defaultDirectory: dir, get: () => dir },
     subprocess: { spawn: noGit, terminalEnvironment: async () => ({ platform: 'windows' }), resolveExecutable: async value => value },
     userQuestions: { ask: async () => ({ answers: [{ id: 'gate', selected: ['批准'] }] }) },
@@ -70,7 +76,7 @@ export async function harness(options = {}) {
       sessionId: id, cwd: dir, controller, reuse: options.reuse ?? {}, signal: new AbortController().signal }
   }
   const plan = exec()
-  const opened = options.noOpen ? null : await svc.openRound(store, plan, { goal: 'Short controllable stand-in; not v15', budget: options.budget })
+  const opened = options.noOpen ? null : await svc.openRound(store, plan, { goal: 'Short controllable stand-in; not v15', budget: { closeoutRequests: 0, ...(options.budget ?? {}) } })
   await controller.attach(store, plan)
   async function spawnWork({ freeze = true } = {}) {
     const result = await controller.dispatch(store, plan, { role: 'work', task: 'Stand-in coordinator' })

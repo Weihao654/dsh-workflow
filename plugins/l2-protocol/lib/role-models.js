@@ -17,7 +17,8 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { ROLES } from './roles.js'
+import { ROLES, resolveExec } from './roles.js'
+import { fail } from './errors.js'
 import { normalizeReuse, policyFor } from './dispatch.js'
 
 export const CONFIG_DIR = '.dsh'
@@ -312,16 +313,17 @@ export function installRouting(ctx) {
       const sessionId = payload?.agent?.id ? String(payload.agent.id) : ''
       if (!sessionId) return base
 
-      const header = headerOf(ctx, sessionId)
-      const preset = header?.agentPreset
-      if (!ROLES.includes(preset)) return base
+      const exec = resolveExec(ctx, { agent: payload.agent })
+      if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', `Cannot route an unverified Agent: ${exec.bindingError}`)
+      const preset = exec.role
+      if (!preset) return base
 
-      const table = loadRoutes(header?.cwd ?? safeCwd())
+      const table = loadRoutes(exec.cwd)
       if (!table.exists || !table.enabled) return base
 
       const route = table.roleModels[preset]
       const decided = tracker.decide(sessionId, base, route, {
-        isRoot: !header?.parentSession && header?.origin !== 'subagent',
+        isRoot: exec.isRoot,
         defaults: defaultSelection(ctx),
       })
       if (!decided) return base
@@ -338,9 +340,9 @@ export function installRouting(ctx) {
         }
       }
       return decided
-    } catch {
-      // A routing failure must never break the step.
-      return base
+    } catch (error) {
+      // Permission, identity and route failures cannot downgrade into an unguarded call.
+      throw error
     }
   }
 

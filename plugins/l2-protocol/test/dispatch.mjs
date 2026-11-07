@@ -14,7 +14,15 @@ test('public dispatch requires controller and exact chain authority', async t =>
   const h = await harness(); t.after(() => h.close())
   assert.equal((await dispatch(h.ctx, h.store, { ...h.plan, controller: null }, { role: 'work', task: 'no bare transport' })).code, 'NO_CONTROLLER')
   const { work } = await h.spawnWork()
+  await assert.rejects(h.controller.dispatch(h.store, h.plan, { role: 'review', task: 'close without evidence' }),
+    e => e.code === 'DISPATCH_DENIED')
+  await h.store.mutate(s => s.rounds[s.activeRoundId].evidence.push({ id: 'E-close', layer: 'command', agentQuiescent: true, jobsQuiescent: true }))
+  const closing = await h.controller.dispatch(h.store, h.plan, { role: 'review', task: 'finish the proven round' })
+  assert.ok(closing.childId)
   await assert.rejects(h.controller.dispatch(h.store, h.plan, { role: 'code', task: 'skip work' }), e => e.code === 'DISPATCH_DENIED')
+  // .36 narrowed the closing exception to the root plan; a non-root plan must not borrow it.
+  await assert.rejects(h.controller.dispatch(h.store, { ...h.plan, isRoot: false }, { role: 'review', task: 'borrow the exception' }),
+    e => e.code === 'DISPATCH_DENIED')
   await assert.rejects(h.controller.dispatch(h.store, work, { role: 'work', task: 'skip parent' }), e => e.code === 'DISPATCH_DENIED')
 })
 test('failed continuation never falls back to a replacement spawn', async t => {

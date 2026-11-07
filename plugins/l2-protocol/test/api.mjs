@@ -296,11 +296,16 @@ async function main() {
 
   console.log(`\n${passed} passed, ${failed} failed`)
   rmSync(DIR, { recursive: true, force: true })
-  process.exit(failed === 0 ? 0 : 1)
+  // Never call process.exit() here: test/run.mjs imports this file in-process, so an early
+  // exit would hide node:test results from the same process. Fold the failure into the code.
+  if (failed > 0) process.exitCode = 1
+  return { passed, failed }
 }
 
-main().catch((error) => {
+try {
+  await main()
+} catch (error) {
   console.error(error)
   rmSync(DIR, { recursive: true, force: true })
-  process.exit(1)
-})
+  process.exitCode = 1
+}

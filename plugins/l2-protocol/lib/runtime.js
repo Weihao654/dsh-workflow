@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { fail } from './errors.js'
 
 export const DEFAULT_WALL_MINUTES = 90
+export const DEFAULT_CLOSEOUT_REQUESTS = 6
+export const DEFAULT_CLOSEOUT_TIME_MS = 120000
+export const DEFAULT_CLOSEOUT_INPUT_FLOOR = 8192
 export const DEFAULT_OUTPUT_CAP = 2048
 export const iso = (at = Date.now()) => new Date(at).toISOString()
 export const newId = prefix => `${prefix}-${randomUUID()}`
@@ -22,10 +25,12 @@ export function budgetOf(round) {
     return value
   }
   return {
-    tokens: number('tokens', 0, 0), testFailures: number('testFailures', 3, 1),
-    fixes: number('fixes', 2, 1), reruns: number('reruns', 2, 1), restarts: number('restarts', 3, 1),
+    tokens: number('tokens', 0, 0), requests: number('requests', 16, 1), testFailures: number('testFailures', 3, 1),
+    fixes: number('fixes', 2, 0), reruns: number('reruns', 2, 0), restarts: number('restarts', 3, 0),
     wallMinutes: number('wallMinutes', DEFAULT_WALL_MINUTES, 0.001, DEFAULT_WALL_MINUTES, false),
     outputCap: number('outputCap', DEFAULT_OUTPUT_CAP, 1),
+    closeoutRequests: number('closeoutRequests', DEFAULT_CLOSEOUT_REQUESTS, 0, 64),
+    closeoutTimeMs: number('closeoutTimeMs', DEFAULT_CLOSEOUT_TIME_MS, 0, 86_400_000),
   }
 }
 
@@ -57,11 +62,18 @@ export function initRuntime(state, round, exec, now = Date.now()) {
 export function freezeDeadline(round) {
   if (round.time) return round.time
   if (!round.baseline) fail('NO_BASELINE', 'Freeze the original T0 first.')
-  const started = Date.parse(round.baseline.frozenAt)
+  // The pre-baseline authorization clock cannot be extended by late freezing.
+  const started = Math.min(Date.parse(round.baseline.frozenAt), Date.parse(round.openedAt ?? round.baseline.frozenAt),
+    Date.parse(round.authorization?.authorizedAt ?? round.baseline.frozenAt))
   const durationMs = Math.round(budgetOf(round).wallMinutes * 60_000)
   const shutdownGraceMs = Math.min(2000, Math.max(10, Math.floor(durationMs / 4)))
-  round.time = { t0: round.baseline.frozenAt, durationMs, shutdownGraceMs,
-    deadlineAt: iso(started + durationMs), signalDueAt: iso(started + durationMs - shutdownGraceMs) }
+  const deadline = started + durationMs
+  // Keep Git's original T0 verbatim; record the earlier authorization clock
+  // separately, and expose the effective remaining interval from that T0.
+  round.time = { t0: round.baseline.frozenAt, authorizedAt: iso(started),
+    durationMs: Math.max(0, deadline - Date.parse(round.baseline.frozenAt)),
+    authorizedDurationMs: durationMs, shutdownGraceMs,
+    deadlineAt: iso(deadline), signalDueAt: iso(deadline - shutdownGraceMs) }
   return round.time
 }
 
@@ -72,6 +84,9 @@ export function assertAdmissible(round, now = Date.now(), { baseline = false, ph
   if (round.control.limitHold) fail('LIMIT_REACHED', 'A failure/retry limit is on hold; no additional work is admitted.')
   if (phase && round.control.pausedPhases?.[phase]) fail('STEP_BLOCKED', `This step is paused: ${round.control.pausedPhases[phase]}`)
   if (baseline && !round.baseline) fail('NO_BASELINE', 'Compute requires the original frozen T0.')
+  if (round.authorization && now >= Date.parse(round.authorization.deadlineAt)) fail('PROJECT_DEADLINE_REACHED', 'The original project deadline cannot be reset by a new round.')
+  const admissionDeadline = Date.parse(round.openedAt ?? '') + budgetOf(round).wallMinutes * 60_000
+  if (Number.isFinite(admissionDeadline) && now >= admissionDeadline) fail('DEADLINE_REACHED', 'The original round authorization deadline has elapsed.')
   if (round.time && now >= Date.parse(round.time.signalDueAt)) fail('DEADLINE_REACHED', 'The fixed T0 deadline is in shutdown grace; no new work is admitted.')
 }
 
@@ -177,7 +192,10 @@ export function requestStopIntent(state, round, args, now = Date.now()) {
 export function usageTotals(round) {
   const requests = Object.values(round.usage?.requests ?? {})
   const settled = requests.filter(r => r.status === 'settled')
-  const pending = requests.filter(r => r.status !== 'settled')
+  // 'failed' rows have a terminal provider failure and no usage receipt: they are
+  // charged at their reservation upper bound instead of blocking forever.
+  const pending = requests.filter(r => r.status === 'pending')
+  const failedCharged = requests.filter(r => r.status === 'failed').reduce((sum, r) => sum + (r.chargeTokens ?? 0), 0)
   // An interrupted request may still have a known lower-bound receipt. Keep it,
   // while reserving the unconfirmed remainder rather than charging it twice.
   const sums = requests.filter(r => r.usage).reduce((sum, r) => ({ inputTokens: sum.inputTokens + r.usage.inputTokens,
@@ -186,13 +204,76 @@ export function usageTotals(round) {
     cacheWriteTokens: sum.cacheWriteTokens + (r.usage.cacheWriteTokens ?? 0),
     reasoningTokens: sum.reasoningTokens + (r.usage.reasoningTokens ?? 0),
   }), { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 })
-  return { ...sums, requests: requests.length, settledRequests: settled.length, pendingRequests: pending.length,
+  return { ...sums, totalTokens: sums.totalTokens + failedCharged, failedCharged,
+    requests: requests.length, settledRequests: settled.length, pendingRequests: pending.length, failedRequests: requests.length - settled.length - pending.length,
     pendingReserved: pending.reduce((sum, r) => sum + Math.max(0, (r.reservedTokens ?? 0) - (r.usage?.totalTokens ?? 0)), 0),
     unknownReservations: pending.filter(r => !Number.isSafeInteger(r.reservedTokens)).length,
     attributionUnknown: round.usage?.attributionUnknown === true,
     unattributedAttempts: round.usage?.unattributedAttempts ?? 0,
     knownUsageIsLowerBound: pending.length > 0 || round.usage?.attributionUnknown === true,
     cost: { amount: null, currency: null, status: 'unknown', note: 'Token usage is not a billed invoice; no price was supplied.' } }
+}
+
+// The closing steps (a review hand-off, a status check and the close itself) need a
+// model request each. Ordinary work must not consume the room they need, so the reserve is
+// computed from the largest input estimate seen so far among the roles that may close: the root
+// plan and an independent review. Sizing it from the plan alone under-provisions the review turn,
+// which routinely carries a larger context (see the .39 note in README).
+// Two promises are kept separate on purpose (see the .39 note):
+//   requests - a slot promise that depends only on the grant, so it can never shrink when a
+//              larger estimate is observed and revoke a slot the closing sequence already relies on;
+//   tokens   - a token hold that grows with the observed (or pending) input estimate, capped at
+//              half the round budget. When the cap binds, the hold still covers one full-size
+//              request; a closing turn that needs more than the cap reports it instead of looping.
+// pendingInput is the input estimate of the request being admitted right now. It is recorded by
+// noteEstimate in the same transaction, so judging that request against the pre-draw estimate
+// would let a request larger than the hold through.
+export function closeoutReserveOf(round, pendingInput = 0) {
+  const limits = budgetOf(round)
+  const source = round.budget ?? {}
+  const pick = (name, fallback) => Number.isSafeInteger(source[name]) && source[name] >= 0 ? source[name] : fallback
+  // Never hold more than a quarter of the request allowance. Grants below four request slots hold
+  // no closing slot at all (see the bySlots rule below); that limit is disclosed, not papered over.
+  const requested = Math.min(pick('closeoutRequests', DEFAULT_CLOSEOUT_REQUESTS), limits.requests)
+  // Below four request slots a quarter rounds to nothing; such a grant cannot hold a closing
+  // sequence at all and that limitation is documented rather than papered over.
+  const bySlots = limits.requests >= 4 ? Math.max(1, Math.floor(limits.requests / 4)) : 0
+  const timeMs = Number.isFinite(source.closeoutTimeMs) && source.closeoutTimeMs > 0 ? source.closeoutTimeMs : DEFAULT_CLOSEOUT_TIME_MS
+  const observed = round.usage?.estimates ?? {}
+  const planInput = Math.max(Number.isSafeInteger(observed.plan) ? observed.plan : 0, DEFAULT_CLOSEOUT_INPUT_FLOOR)
+  const reviewInput = Number.isSafeInteger(observed.review) ? observed.review : 0
+  const pending = Number.isSafeInteger(pendingInput) && pendingInput > 0 ? pendingInput : 0
+  const closingInput = Math.max(planInput, reviewInput, pending)
+  const perRequest = closingInput + limits.outputCap
+  // The token side is capped at half of the round token budget, never below one request estimate.
+  // When the budget is smaller than two estimates the cap is one request, so the reserve can equal or
+  // even exceed the whole budget. Documented consequence: the plan cannot start new work there; an
+  // empty round still closes as abortedEmpty, a round with dispatched work and no evidence cannot
+  // close. Only the token hold is recomputed from the cap: the slot promise stays at wanted so a
+  // larger estimate never removes a slot that an admitted closing turn may still need.
+  const wanted = Math.min(requested, bySlots)
+  const rawTokens = wanted * perRequest
+  const tokenCap = limits.tokens > 0 ? Math.max(perRequest, Math.floor(limits.tokens / 2)) : rawTokens
+  const tokens = Math.min(rawTokens, tokenCap)
+  return { requests: wanted, tokens, timeMs, perRequest, planInput, reviewInput, closingInput, tokenCap,
+    basis: 'fixed closing slot promise; token hold = largest closing-role input estimate (root plan or review, or the pending request) + output cap, capped at half the round budget' }
+}
+
+export function closeoutSpentOf(round) {
+  const spent = round.usage?.closeout
+  return { requests: Number.isSafeInteger(spent?.requests) ? spent.requests : 0,
+    tokens: Number.isSafeInteger(spent?.tokens) ? spent.tokens : 0 }
+}
+export function closeoutReady(round) {
+  const evidence = round.evidence ?? []
+  return evidence.some(row => row.layer === 'command') && evidence.some(row => row.layer === 'review')
+}
+
+export function noteEstimate(round, role, inputTokens) {
+  round.usage ??= { requests: {} }
+  round.usage.estimates ??= {}
+  const prior = Number.isSafeInteger(round.usage.estimates[role]) ? round.usage.estimates[role] : 0
+  if (Number.isSafeInteger(inputTokens) && inputTokens > prior) round.usage.estimates[role] = inputTokens
 }
 
 export function briefStatus(round, now = Date.now()) {

@@ -3,11 +3,25 @@ import { installRouting } from './role-models.js'
 import { installUsage } from './usage.js'
 import { registerApi } from './api.js'
 import { ChainController } from './controller.js'
+import { resolveProfileDir } from './profile-dir.js'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 export const name = 'role-chain-protocol'
 export const inject = ['tools']
 function say(ctx, text) { try { ctx.logger?.info?.(`[role-chain] ${text}`) } catch {} }
+function readJson(file) { return JSON.parse(readFileSync(file, 'utf8')) }
 export function apply(ctx) {
-  const controller = new ChainController(ctx)
+  // The launcher's profile path stays authoritative; an installed copy on a desktop
+  // Host (which exports no DSH_PROFILE_DIR) derives the profile from its own module
+  // location. Anything else fails closed instead of guessing a ledger location.
+  const { dir: profileDir, source } = resolveProfileDir({
+    envDir: process.env.DSH_PROFILE_DIR,
+    moduleUrl: import.meta.url,
+    exists: existsSync,
+    readJson,
+  })
+  const controller = new ChainController(ctx, { authorityRoot: join(profileDir, 'role-chain-authority') })
+  say(ctx, `authority root ${join(profileDir, 'role-chain-authority')} (profile dir from ${source})`)
   const routing = installRouting(ctx)
   const usageDispose = installUsage(ctx, controller)
   const toolsDispose = registerTools(ctx, { tracker: routing.tracker, controller })

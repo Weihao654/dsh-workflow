@@ -1,6 +1,7 @@
 // Real native Windows Job tests. Host APIs and the full sandbox contract are
 // explicit stand-ins. This verifies containment, NOT file isolation or live DSH integration.
 import assert from 'node:assert/strict'
+import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -10,6 +11,7 @@ import { acquireAdmissionLock } from '../lib/admission.js'
 import { requestStopIntent } from '../lib/runtime.js'
 import { atomicJson } from '../lib/store.js'
 const results = []
+let casesRun = 0
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 async function until(fn, timeout = 8000) {
   const untilAt = Date.now() + timeout
@@ -38,6 +40,7 @@ function actualSubprocess(h) {
   return async () => { for (const child of wrappers) child.kill(); await pause(40) }
 }
 async function run(name, body, budget = { wallMinutes: 0.25 }) {
+  casesRun += 1
   const h = await harness({ budget }), cleanup = actualSubprocess(h)
   // Deliberate trusted test double, never a production fallback or OS-isolation proof.
   h.services.sandbox = { confine: async argv => ({ argv, enforcement: 'full' }) }
@@ -122,11 +125,49 @@ if (process.platform !== 'win32') {
       const receiptPath = join(executionDir(h.store, e), 'receipt.json'), receipt = JSON.parse(await readFile(receiptPath, 'utf8'))
       await atomicJson(receiptPath, { ...receipt, nonce: 'incorrect-identity' })
       const mismatched = await readJobProof(h.store, e)
-      assert.equal(mismatched.jobsQuiescent, null); assert.match(mismatched.proofError, /mismatch/)
+      assert.equal(mismatched.jobsQuiescent, null); assert.match(mismatched.proofError, /JOB_PROOF_INVALID/)
       return { backend: 'windows-job-list-v1', exitAt: proof.jobExitAt, argvRoundTrip: true, lateStopPreservedNaturalCompletion: true, mismatchedReceipt: 'unknown' }
+    })
+    await run('same-call bounded wait returns the real exit code instead of relying on a later status turn', async h => {
+      const { work } = await h.spawnWork()
+      const started = await h.controller.compute(h.store, work, { argv: [process.execPath, '-e',
+        'process.stdout.write("WAIT_OK");process.exit(7)'], label: 'bounded wait stand-in', waitMs: 30000 })
+      assert.equal(started.wait.settled, true, JSON.stringify(started.wait))
+      assert.equal(started.wait.exitCode, 7)
+      assert.equal(started.wait.jobsQuiescent, true)
+      const e = await h.store.read(s => s.rounds[started.roundId].executions[started.executionId])
+      assert.equal(e.jobsQuiescent, true); assert.equal(e.exitCode, 7); assert.equal(e.state, 'completed')
+      assert.match(await readFile(e.stdoutPath, 'utf8'), /WAIT_OK/)
+      return { backend: 'windows-job-list-v1', settledInCall: true, exitCode: 7, jobEmpty: true,
+        proof: 'receipt + collected stdout', boundary: 'stand-in Host job adapter, fake-full sandbox' }
+    })
+    await run('bounded wait timeout reports unsettled and leaves the job under supervision until cancelled', async h => {
+      const { work } = await h.spawnWork()
+      const started = await h.controller.compute(h.store, work, { argv: [process.execPath, '-e', 'setInterval(()=>{},1000)'],
+        label: 'slow stand-in', waitMs: 400 })
+      assert.equal(started.wait.settled, false, JSON.stringify(started.wait))
+      const before = await h.store.read(s => s.rounds[started.roundId].executions[started.executionId])
+      assert.equal(before.jobsQuiescent, null)
+      await h.controller.stop(h.store, work, { roundId: before.roundId, executionId: before.id, generation: before.generation,
+        requestId: 'timeout-then-cancel', reason: 'bounded wait timed out', waitMs: 500 })
+      await until(async () => (await readJobProof(h.store, before))?.jobsQuiescent === true)
+      await h.calls.jobs[0].done
+      await h.controller.refresh(h.store, before.roundId)
+      const after = await h.store.read(s => s.rounds[before.roundId].executions[before.id])
+      assert.equal(after.jobsQuiescent, true); assert.match(String(after.outcome), /^cancelled/)
+      return { backend: 'windows-job-list-v1', timeoutReportedSettled: false, cancelledAfterTimeout: true,
+        boundary: 'stand-in Host job adapter, fake-full sandbox' }
     })
   } finally {
     await mkdir(new URL('./results/', import.meta.url), { recursive: true })
     await writeFile(new URL('./results/windows.json', import.meta.url), `${JSON.stringify({ sampledAt: new Date().toISOString(), platform: process.platform, results }, null, 2)}\n`, 'utf8')
   }
 }
+
+// Without this, "node --test" reports only a file-level pass: deleting every case above
+// would still look green. The expected count lives in the same file it checks.
+test('all six native containment cases executed and passed', () => {
+  assert.equal(casesRun, 6, 'all six native cases must run')
+  assert.equal(results.length, 6)
+  assert.ok(results.every(row => row.pass === true), 'every native case must pass')
+})

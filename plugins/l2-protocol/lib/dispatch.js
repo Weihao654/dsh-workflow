@@ -1,6 +1,9 @@
 // Policy and public dispatch facade. All live work goes through the controller.
 export const REUSE_POLICIES = ['persistent', 'family', 'fresh']
 export const DEFAULT_REUSE = { work: 'persistent', code: 'family', review: 'fresh' }
+// plan -> work is the normal flow. The controller adds one closing exception: a plan that already
+// holds command evidence may dispatch review, so a round that ran out of ordinary room can still be
+// finished. That exception never applies before the command evidence exists.
 export const DISPATCH_AUTHORITY = { plan: ['work'], work: ['code', 'review'] }
 const ROLES = ['work', 'code', 'review']
 

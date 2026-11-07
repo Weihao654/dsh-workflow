@@ -1,4 +1,4 @@
-# L2 设计与保证边界（0.2.0-rc.1）
+# L2 设计与保证边界（0.2.1-rc.20261106.39）
 
 本文件取代早期 0.1 原型设计。旧版“任何续聊失败就新建”“名册删除即可重建”“tokenMeter 可当累计账单”等描述不再适用。候选版源码不等于当前 Host 已加载。
 
@@ -14,7 +14,9 @@
 
 ## 2. 派发与复用
 
-实际权限链只有 plan→work、work→code/review。仅本机 spawn provider，并要求 preset 能力；无远程替代。
+实际权限链为 plan→work、work→code/review，另有一条收尾例外：已持有 command 证据的根 plan 可派发
+review 收尾（`.34` 起，`lib/controller.js` 的 `closesWithReview`，仍要求 command 证据与根身份）。
+仅本机 spawn provider，并要求 preset 能力；无远程替代。
 
 新建前持久预留执行身份，进入 provider 前重新检查屏障/期限/阶段。启动返回太晚而已被撤销时，收割确切 handle，不给正常 ack。启动前明确失败可证明 not-started；已经进入 provider 的失败不能推断从未启动。
 
@@ -55,6 +57,8 @@ Host 端同时等待 done 与 waitForExit；只有 exact live capability 的 pro
 T0 只冻结一次，默认 90 分钟，可缩短，不可延长。宽限在预算内；控制器重建沿用原绝对时间。监督器能独立执行时间检查，不等于已做真实 Host 强杀/机器故障测试。
 
 每个可观察 llm/stream attempt 唯一 Qid；provider I/O 前写入输入估算和输出 cap 预留。账本累加所有角色、阶段与重试，不用上下文 tokenMeter 代替累计量。最新 usage 快照覆盖同次 attempt，不逐块相加；cache/reasoning 是总量子集。
+
+关轮预留是两个独立承诺，不能互相推导：槽位数只由授权决定（`min(closeoutRequests, floor(预算请求数/4))`），不随输入估算重算，否则已准入的收尾回合会被算术收回槽位；token 预留随"取最大值"的输入估算单调不减，以半轮预算封顶，并在每次收尾支取时把本次待记输入计入判定。轮预算、授权 envelope 与半额封顶仍是真正的上限，本层不因此扩大授权。
 
 中断/缺 usage 保留 pending，已知部分是下界，预留剩余不被释放成零费用。无法归属的 stream 标记受控轮次 uncertainty 并撤销后续执行，不擅自取消无关 stream。
 

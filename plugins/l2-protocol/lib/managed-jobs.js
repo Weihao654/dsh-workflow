@@ -1,4 +1,5 @@
 // Windows-only execution adapter. A host Job id is not a process-exit receipt.
+import { existsSync } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +8,7 @@ import { fail } from './errors.js'
 import { serviceOf } from './host.js'
 import { iso, roundOf } from './runtime.js'
 import { acquireAdmissionLock } from './admission.js'
+import { readJobReceipt } from './receipt-proof.js'
 
 const SCRIPT = fileURLToPath(new URL('./windows-supervisor.ps1', import.meta.url))
 export function executionDir(store, execution) {
@@ -35,27 +37,27 @@ export async function signalManagedJob(store, execution, stop, now = Date.now(),
 }
 export async function readJobProof(store, execution) {
   const path = join(executionDir(store, execution), 'receipt.json')
-  let receipt
-  try { receipt = JSON.parse(await readFile(path, 'utf8')) }
-  catch (error) {
-    if (error.code === 'ENOENT') return null
-    return { jobsQuiescent: null, checkedAt: iso(), proofError: `Receipt unreadable: ${error.message}` }
-  }
-  const expected = identity(execution)
-  if (Object.entries(expected).some(([key, value]) => receipt[key] !== value) || receipt.backend !== 'windows-job-list-v1')
-    return { jobsQuiescent: null, checkedAt: iso(), proofError: 'Receipt identity/backend mismatch; no PID is signalled.' }
+  if (!existsSync(path)) return null
   const time = await store.read(state => state.rounds[execution.roundId]?.time)
-  if (!time || Date.parse(receipt.deadlineAt) !== Date.parse(time.deadlineAt) || Date.parse(receipt.signalDueAt) !== Date.parse(time.signalDueAt))
-    return { jobsQuiescent: null, checkedAt: iso(), proofError: 'Receipt changed the original T0 deadline.' }
+  if (!time) return { jobsQuiescent: null, checkedAt: iso(), proofError: 'Receipt arrived without a fixed T0 deadline.' }
+  // One validator for the receipt: location, regular-file shape, identity and content. A tampered,
+  // moved or linked file is reported as unproven instead of being read as a completed job.
+  const proof = readJobReceipt('windows-job-empty:' + path, { requireLaunched: false, storeDir: store.dir, roundId: execution.roundId,
+    executionId: execution.id, nonce: execution.nonce, generation: execution.generation,
+    deadlineAt: time.deadlineAt, signalDueAt: time.signalDueAt })
+  if (!proof.ok) return { jobsQuiescent: null, checkedAt: iso(), proofError: proof.code + ': ' + proof.reason }
+  const receipt = proof.receipt
   const checkedAt = Date.parse(receipt.checkedAt), exitAt = Date.parse(receipt.exitAt)
-  if (receipt.jobEmpty !== true || !Number.isFinite(checkedAt) || !Number.isFinite(exitAt))
+  if (!Number.isFinite(checkedAt) || !Number.isFinite(exitAt))
     return { jobsQuiescent: null, checkedAt: iso(), proofError: receipt.error ?? 'No Windows Job-empty exit proof.' }
-  return { jobsQuiescent: true, state: receipt.reason?.startsWith('cancelled') || receipt.reason?.startsWith('deadline') ? 'stopped' : 'completed',
+  return { jobsQuiescent: true, launched: receipt.launched === true,
+    state: receipt.reason?.startsWith('cancelled') || receipt.reason?.startsWith('deadline') ? 'stopped' : 'completed',
     checkedAt: receipt.checkedAt, jobExitAt: receipt.exitAt, signalAt: receipt.signalAt ?? execution.signalAt ?? null,
     stopLatencyMs: receipt.signalAt ? Math.max(0, exitAt - Date.parse(receipt.signalAt)) : null,
     deadlineMet: exitAt <= Date.parse(time.deadlineAt),
     outcome: receipt.reason, exitCode: receipt.exitCode, proofError: receipt.error ?? null,
-    evidenceRefs: [...new Set([...(execution.evidenceRefs ?? []), `windows-job-empty:${path}`])] }
+    receiptDigest: proof.digest,
+    evidenceRefs: [...new Set([...(execution.evidenceRefs ?? []), proof.ref])] }
 }
 export async function launchManagedJob(ctx, store, execution, spec, controller) {
   if (spec.isolation?.mode !== 'read-only' || spec.isolation?.enforcement !== 'full')
@@ -129,6 +131,10 @@ export async function launchManagedJob(ctx, store, execution, spec, controller) 
   await store.mutate(state => {
     const e = state.rounds[execution.roundId].executions[execution.id]
     e.jobId = String(jobId); e.acceptedAt = iso(controller.now())
+    // Persist the argv that was actually scheduled. Command evidence is derived from
+    // this record (and its native receipt), never from a caller-typed string.
+    e.spec = { requested: Array.isArray(spec.requested) ? [...spec.requested] : null,
+      argv: Array.isArray(spec.argv) ? [...spec.argv] : [], cwd: spec.cwd ?? null, label: spec.label ?? null }
     if (!e.resumeBlocked && e.jobsQuiescent !== true) e.state = 'running'
   })
   return { jobId: String(jobId), roundId: execution.roundId, executionId: execution.id,

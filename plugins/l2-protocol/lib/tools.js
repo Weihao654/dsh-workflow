@@ -1,6 +1,7 @@
 import { resolveExec } from './roles.js'
 import { forCwd } from './store.js'
 import { describeRoutes, loadRoutes, saveRoleModels } from './role-models.js'
+import { lossless } from './lossless.js'
 import { dispatch, readRoster, release } from './dispatch.js'
 import { serviceOf } from './host.js'
 import * as svc from './service.js'
@@ -20,7 +21,7 @@ export function registerTools(ctx, options = {}) {
       async execute(args, raw) {
         const exec = resolveExec(ctx, raw)
         if (!exec.role || !spec.roles.includes(exec.role)) throw new Error(`ROLE_DENIED: ${spec.name} requires ${spec.roles.join('/')}; actual preset=${exec.preset ?? 'unknown'}.`)
-        const store = forCwd(exec.cwd)
+        const store = controller ? controller.storeForCwd(exec.cwd) : forCwd(exec.cwd)
         exec.reuse = loadRoutes(exec.cwd).reuse
         exec.controller = controller
         if (controller) await controller.attach(store, exec)
@@ -33,10 +34,11 @@ export function registerTools(ctx, options = {}) {
   push({ name: 'chain_open_round', roles: ['plan'], description: '开启可验收的一轮并登记总预算；已有未关闭轮次则拒绝。仅实际根 plan 可开轮。',
     properties: { goal: S('可验收的目标。'), scope: S('授权范围；省略沿用目标。'),
       budget: { type: 'object', properties: {
-        tokens: { type: 'integer', minimum: 0, description: '本轮全角色累计 token 上限；0 表示未声明，不是假定零费用。' },
+        requests: { type: 'integer', minimum: 1, description: '本轮全角色可观测模型尝试总上限，默认16；失败、取消和重试不返还名额。' },
+        tokens: { type: 'integer', minimum: 0, description: '本轮全角色累计 token 额度，包含缓存；输入为估算准入，不是硬 token 封顶。0 表示未声明。' },
         wallMinutes: { type: 'number', minimum: 0.001, maximum: 90, description: '原始 T0 起的总分钟数，默认90；可缩短测试，不可延长或重置。' },
         outputCap: { type: 'integer', minimum: 1, description: '每次请求的输出 token 上限，默认2048；输入另作估算预留。' },
-        fixes: { type: 'integer', minimum: 1 }, reruns: { type: 'integer', minimum: 1 }, restarts: { type: 'integer', minimum: 1 },
+        fixes: { type: 'integer', minimum: 0 }, reruns: { type: 'integer', minimum: 0 }, restarts: { type: 'integer', minimum: 0 },
       } } }, required: ['goal'], run: async ({ store, exec, args }) => {
         const result = await svc.openRound(store, exec, args)
         await controller?.attach(store, exec)
@@ -53,16 +55,16 @@ export function registerTools(ctx, options = {}) {
     run: ({ store, exec, args }) => svc.recordFailure(store, exec, args) })
   push({ name: 'chain_record_evidence', roles: ALL, description: '按调用者实际角色记录最小证据，自动绑定原始 T0与执行代际；自述不是独立验证。',
     properties: { ...ROUND_ID, layer: { type: 'string', enum: ['command', 'artifact', 'self-report', 'review'] },
-      payload: { type: 'object', description: 'command:{command,exitCode}；artifact:{path}；self-report:{text}；review:{verdict:pass|fail|partial,scope:[],uncovered:[]}。' } },
+      payload: { type: 'object', description: 'command:{jobId}（必填绑定）：jobId 填 chain_compute 返回的 jobId 或其 executionId；command/exitCode/outcome/argv 一律从该 job 的账本记录与原生回执推导，补齐值仅在完全一致时才接受，不匹配即 EVIDENCE_MISMATCH；无 jobId 的自填 command+exitCode 一律拒绝（COMMAND_BINDING_REQUIRED，自述不能当回执）。返回 payload 另含 jobId(executionId)、hostJobId、argv（调用方请求的 argv 数组）/executedArgv（受限后实际调度的 argv 数组，执行事实）、executedCommand（展示串）与 ownerSessionId/parentExecutionId（来源）。artifact:{path}；self-report:{text}；review:{verdict:pass|fail|partial,scope:[],uncovered:[]}。' } },
     required: ['layer', 'payload'], run: ({ store, exec, args }) => svc.recordEvidence(store, exec, args) })
   push({ name: 'chain_dispatch', roles: ['plan', 'work'], description: '受控派发：plan→同轮work，work→按族code/独立review。同轮跨阶段复用，忙或取消时不另开替身；返回确切执行代际。',
     properties: { ...ROUND_ID, ...PHASE, role: { type: 'string', enum: ['work', 'code', 'review'] }, task: S('本次任务/差量指令。'),
       family: S('按族复用的稳定任务族，默认default。'), fresh: { type: 'boolean', description: '仅review可设true；work/code不得用新建绕过忙碌或取消记录。' },
-      maxDepth: { type: 'integer', minimum: 1, description: '绝对委派深度上限，默认2。' } }, required: ['role', 'task'],
+      maxDepth: { type: 'integer', minimum: 1, description: '绝对委派深度上限，默认2。' }, waitMs: { type: 'integer', minimum: 0, maximum: 600000, description: 'bounded in-call wait: polls the local ledger only, never a model request; returns settled:false on timeout' } }, required: ['role', 'task'],
     run: ({ ctx, store, exec, args }) => dispatch(ctx, store, exec, args) })
   push({ name: 'chain_compute', roles: ['work', 'code'], description: '仅在完整只读隔离可用时启动本机Windows受控计算；partial或缺失隔离直接拒绝，不得裸shell/远程回退。原始T0期限不重置。',
     properties: { ...ROUND_ID, ...PHASE, argv: { type: 'array', items: { type: 'string' }, minItems: 1,
-      description: '程序及逐项参数；不是shell字符串。当前仅支持本机Windows。' }, label: S('简短任务名。') }, required: ['argv'],
+      description: '程序及逐项参数；不是shell字符串。当前仅支持本机Windows。' }, label: S('简短任务名。'), waitMs: { type: 'integer', minimum: 0, maximum: 600000, description: '有界同调用等待：优先宿主 job 完成通知，回退本地账本轮询，绝不产生模型请求；超时返回 settled:false。省略时访客运行器默认等待45000ms，0表示不等待。' } }, required: ['argv'],
     run: ({ store, exec, args }) => { if (!controller) throw new Error('NO_CONTROLLER'); return controller.compute(store, exec, args) } })
   push({ name: 'chain_stop', roles: ALL, description: '持久化停止意图后取消自有执行，分别确认Agent/计算退出；原生启动封闭可能仍pending。accepted或无活跃项不等于已停。',
     properties: { ...ROUND_ID, requestId: S('调用方稳定请求id，重试沿用；不得给不同停止请求复用id。'), reason: S('撤销原因。'),
@@ -78,7 +80,7 @@ export function registerTools(ctx, options = {}) {
       if (controller) { const id = await store.read(s => args.roundId ?? s.activeRoundId); if (id) await controller.refresh(store, id) }
       const board = await svc.status(store, args)
       if (args.detail === 'full') { board.roleModels = describeRoutes(ctx, exec, tracker); board.agents = await readRoster(store) }
-      return board
+      return lossless(board)
     } })
   push({ name: 'chain_gate', roles: ALL, description: '仅具体的新范围/预算/业务规则/权限变更交用户；子代理通过原work上交plan。NOT_GATED不是安全许可，技术问题由work处理或暂停受阻步；accept仅收尾。',
     properties: { ...ROUND_ID, kind: { type: 'string', enum: ['scope', 'budget', 'rule', 'accept', 'force'] }, question: S('需要用户拍板的具体决定。'),

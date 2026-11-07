@@ -1,7 +1,7 @@
 // Host-owned capabilities, not roster ids, authorize cancellation.
 import { randomUUID } from 'node:crypto'
 import { forCwd, canonicalCwd } from './store.js'
-import { resolve, relative, dirname, basename } from 'node:path'
+import { resolve, relative, dirname, basename, sep, isAbsolute } from 'node:path'
 import { resolveExec } from './roles.js'
 import { serviceOf, bounded } from './host.js'
 import { fail } from './errors.js'
@@ -10,19 +10,74 @@ import { aggregate, assertAdmissible, assertMember, bindingOf, budgetOf, current
 import { DISPATCH_AUTHORITY, pickProvider, policyFor, rosterKey } from './dispatch.js'
 import { executionDir, launchManagedJob, readJobProof, signalManagedJob } from './managed-jobs.js'
 import { acquireAdmissionLock } from './admission.js'
+import { authorizeProject, assertProjectAdmission } from './authorization.js'
+import { openRound } from './service.js'
 
 const USER = Symbol('genuine-human-command')
 const OWNER = Symbol('preauthorized-controller')
+
+/**
+ * A configured custom runner (`sandbox.runnerCommand`) is an operator assertion
+ * that executes the command inside its own guest. The host must then NOT resolve
+ * `argv[0]` against the Windows PATH: a guest command such as `sh` does not exist
+ * on the host and must be resolved inside the guest by the runner profile.
+ */
+export function hasGuestRunner(sandbox) {
+  try {
+    const rules = sandbox?.configuredRunnerFailureSignatures
+    if (Array.isArray(rules) && rules.length > 0) return true
+    const runner = sandbox?.runnerCommand
+    if (Array.isArray(runner) && runner.length > 0) return true
+  } catch { /* a service proxy may hide internals; fall back to host resolution */ }
+  return false
+}
 const SAFE_PARAMETERS = { read: ['file_path'], read_image: ['file_path'], glob: ['pattern'], grep: ['pattern'],
   write: ['file_path', 'content'], edit: ['file_path', 'old_string', 'new_string'], todo_write: ['todos'],
   web_fetch: ['url'], web_search: ['queries'] }
 const STOP_SAFE = new Set(['chain_status', 'chain_stop', 'chain_export_audit', 'chain_record_evidence', 'chain_close_round',
   'read', 'read_image', 'glob', 'grep'])
 
+/**
+ * Bounded in-call wait for an execution to settle. It polls the durable ledger
+ * only (never the model), so a tool call can wait for a real job/child exit
+ * while its owner session is still alive instead of returning early and letting
+ * the Host dispose the owned job. No state is fabricated: on timeout the caller
+ * receives `settled:false` and the execution stays as it is.
+ */
+async function raceSettled(promise, timeoutMs, signal) {
+  if (!promise) return false
+  if (signal?.aborted) return false
+  let timer
+  const timeout = new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), Math.max(0, Number(timeoutMs) || 0)) })
+  const aborted = new Promise(resolve => { if (signal) signal.addEventListener('abort', () => resolve('aborted'), { once: true }) })
+  try { const outcome = await Promise.race([promise.then(() => 'settled', () => 'settled'), timeout, aborted]); return outcome === 'settled' }
+  finally { clearTimeout(timer) }
+}
+
+async function waitForSettled(store, roundId, executionId, timeoutMs, signal) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+  const isJob = String(executionId).startsWith('J-')
+  let last = null
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return { settled: false, aborted: true, execution: last }
+    last = await store.read(state => state.rounds?.[roundId]?.executions?.[executionId] ?? null)
+    if (last) {
+      if (isJob && last.jobsQuiescent !== null && last.jobsQuiescent !== undefined)
+        return { settled: true, execution: last }
+      if (!isJob && ['completed', 'stopped', 'failed'].includes(last.state))
+        return { settled: true, execution: last }
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return { settled: false, execution: last }
+}
+
 export class ChainController {
   constructor(ctx, options = {}) {
     this.ctx = ctx
     this.now = options.now ?? Date.now
+    // Trusted apply-time configuration only, never model tool arguments.
+    this.storeOptions = options.authorityRoot ? { authorityRoot: options.authorityRoot } : {}
     this.hostId = randomUUID()
     this.stores = new Map()
     this.sessions = new Map()
@@ -36,6 +91,13 @@ export class ChainController {
     this.disposers = []
     this.pending = new Set()
     this.closed = false
+  }
+  storeForCwd(cwd) { return forCwd(cwd, this.storeOptions) }
+  assertSessionLocation(store, exec) {
+    const known = this.sessions.get(exec.sessionId)
+    if (known && known.store.key !== store.key)
+      fail('EXECUTION_SCOPE_CHANGED', 'A protected session cannot leave its original project ledger by changing cwd.')
+    store.assertSessionLocation(exec.sessionId)
   }
   log(error) { try { this.ctx.logger?.warn?.(`[role-chain] ${error?.message ?? error}`) } catch {} }
   track(promise) {
@@ -56,6 +118,7 @@ export class ChainController {
   assertLiveAdmission(store, execution) {
     if (this.blocked(store, execution)) fail('RESUME_BLOCKED', 'Stop admission is closed before any signal is sent.')
     const state = store.snapshot(), round = roundOf(state, execution.roundId)
+    if (store.requiresAuthorization) assertProjectAdmission(state, this.now())
     const e = round.executions?.[execution.id]
     assertAdmissible(round, this.now(), { phase: e?.phase })
     if (!e || e.generation !== execution.generation || e.resumeBlocked || !currentFence(state, e))
@@ -79,12 +142,14 @@ export class ChainController {
   async forSession(sessionId) {
     if (!sessionId) return null
     const id = String(sessionId)
+    const exec = resolveExec(this.ctx, { sessionId: id })
+    if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
+    this.assertSessionLocation(this.storeForCwd(exec.cwd), exec)
     let known = this.sessions.get(id)
     if (!known) {
       const sessions = serviceOf(this.ctx, 'sessions'), session = sessions?.get?.(id)
       if (!session) return null
-      const exec = resolveExec(this.ctx, { agent: { id } })
-      known = await this.attach(forCwd(exec.cwd), exec)
+      known = await this.attach(this.storeForCwd(exec.cwd), exec)
     }
     if (!known) return null
     return known.store.read(state => {
@@ -96,10 +161,14 @@ export class ChainController {
   }
   async beforeRequest(agent, signal) {
     if (signal?.aborted) fail('CANCELLED', 'The request was cancelled before admission.')
-    const exec = resolveExec(this.ctx, { agent, signal }), store = forCwd(exec.cwd)
+    const exec = resolveExec(this.ctx, { agent, signal }), store = this.storeForCwd(exec.cwd)
+    if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
+    this.assertSessionLocation(store, exec)
     const admission = await this.attach(store, exec)
     if (!admission) {
-      if (exec.role && exec.role !== 'plan') fail('MANAGED_ROUND_REQUIRED', 'Role workers must be dispatched through chain_dispatch.')
+      // A profile-owned ledger is a storage/authorization policy, not project enrollment.
+      const protectedScope = await store.read(state => Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt)))
+      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', 'A trusted preauthorized round binding is required before protected model I/O.')
       return null
     }
     const execution = await store.read(state => roundOf(state, admission.identity.roundId).executions[admission.identity.executionId])
@@ -125,10 +194,11 @@ export class ChainController {
     }))
   }
   arm(store, round) {
-    if (!round.time || round.closedAt || round.control?.resumeBlocked) return
+    const dueAt = round.time?.signalDueAt ?? round.authorization?.deadlineAt
+    if (!dueAt || round.closedAt || round.control?.resumeBlocked) return
     const key = this.barrierKey(store, round.id)
     if (this.timers.has(key)) return
-    const delay = Math.max(0, Date.parse(round.time.signalDueAt) - this.now())
+    const delay = Math.max(0, Date.parse(dueAt) - this.now())
     const timer = setTimeout(() => {
       this.timers.delete(key)
       this.track(this.autoStop(store, round.id, 'deadline'))
@@ -175,7 +245,12 @@ export class ChainController {
   }
   async dispatch(store, exec, args) {
     const role = String(args.role ?? '').trim(), task = String(args.task ?? '').trim()
-    if (!(DISPATCH_AUTHORITY[exec.role] ?? []).includes(role)) fail('DISPATCH_DENIED', 'plan dispatches work; work dispatches code/review.')
+    // Closing exception: a plan that already holds command evidence may dispatch the independent
+    // review that finishes the round. Without it a round whose ordinary room ran out before work
+    // dispatched review would have no legal terminal state. Before that evidence exists the old
+    // rule stands (plan -> work only), so this cannot be used to start a review out of nowhere.
+    const closesWithReview = exec.role === 'plan' && exec.isRoot === true && role === 'review'
+    if (!(DISPATCH_AUTHORITY[exec.role] ?? []).includes(role) && !closesWithReview) fail('DISPATCH_DENIED', 'plan dispatches work; work dispatches code/review.')
     if (!task) fail('BAD_ARGS', 'A dispatch needs a task.')
     if (exec.signal?.aborted) fail('CANCELLED', 'The caller was cancelled.')
     const subagents = serviceOf(this.ctx, 'subagents'), provider = pickProvider(subagents)
@@ -187,6 +262,8 @@ export class ChainController {
     const family = role === 'code' ? String(args.family ?? 'default').trim() || 'default' : null
     const intent = await store.mutate(state => {
       const round = roundOf(state, args.roundId), parent = assertMember(state, round, exec)
+      if (closesWithReview && !round.evidence.some(row => row.layer === 'command'))
+        fail('DISPATCH_DENIED', 'A plan may dispatch review only to finish a round that already holds command evidence; the first review is dispatched by work.')
       if (this.blocked(store, parent)) fail('RESUME_BLOCKED', 'An ancestor stop has already closed admission.')
       assertAdmissible(round, this.now(), { phase: args.phase ?? round.control.phase })
       if (role !== 'work' && !round.baseline) fail('NO_BASELINE', 'Only the coordinator may bootstrap before T0.')
@@ -274,9 +351,19 @@ export class ChainController {
         return { ok: false, code: 'STOP_PENDING', roundId: execution.roundId, executionId: execution.id,
           childId: execution.childSessionId, generation: execution.generation, state: 'stop-pending' }
       }
-      return { ok: true, action: previous ? 'reuse' : 'spawn', role, policy, family,
+      const dispatched = { ok: true, action: previous ? 'reuse' : 'spawn', role, policy, family,
         roundId: execution.roundId, executionId: execution.id, generation: execution.generation,
         childId: execution.childSessionId, messageId: live.messageId }
+      // A bounded wait keeps the parent turn (and thus the child owner) alive
+      // without spending extra model requests on status polling.
+      const waitMs = Math.max(0, Math.min(Number(args.waitMs) || 0, 600000))
+      if (!waitMs) return dispatched
+      const waited = await waitForSettled(store, execution.roundId, execution.id, waitMs, exec.signal)
+      if (waited.settled) await this.refresh(store, execution.roundId)
+      const settled = waited.execution
+      return { ...dispatched, wait: { settled: Boolean(waited.settled), aborted: Boolean(waited.aborted),
+        state: settled?.state ?? null, agentQuiescent: settled?.agentQuiescent ?? null,
+        jobsQuiescent: settled?.jobsQuiescent ?? null, exitCode: settled?.exitCode ?? null } }
     } catch (error) {
       if (live.entered) this.track(this.stopWithAuthority(store, { roundId: execution.roundId,
         executionId: execution.id, generation: execution.generation, reason: 'launch-failure',
@@ -455,22 +542,57 @@ export class ChainController {
       if (typeof sandbox?.confine !== 'function') fail('COMPUTE_ISOLATION_UNAVAILABLE', 'Controlled compute requires full read-only process confinement; no same-user unconfined fallback.')
       const platform = await subprocess.terminalEnvironment(exec.signal)
       if (platform.platform !== 'windows') fail('UNSUPPORTED_BACKEND', 'This adapter controls Windows Job objects only; remote/POSIX are uncovered.')
-      const executable = await subprocess.resolveExecutable(args.argv[0], undefined, exec.signal)
       const policy = { mode: 'read-only', workspaceRoot: store.rootDir, sessionId: exec.sessionId }
+      let guestRunner = hasGuestRunner(sandbox)
+      let executable = String(args.argv[0])
+      if (!guestRunner) {
+        try { executable = await subprocess.resolveExecutable(args.argv[0], undefined, exec.signal) }
+        catch (error) {
+          // A hidden custom-runner configuration still advertises full enforcement
+          // for a guest-only command; the default rung stays partial and rethrows.
+          const probe = await sandbox.confine([String(args.argv[0])], policy, exec.signal)
+          if (probe?.enforcement !== 'full') throw error
+          guestRunner = true
+        }
+      }
       const confined = await sandbox.confine([executable, ...args.argv.slice(1)], policy, exec.signal)
       if (confined?.enforcement !== 'full' || !Array.isArray(confined.argv) || !confined.argv.length ||
         confined.argv.some(v => typeof v !== 'string' || v.includes('\0')))
         fail('COMPUTE_ISOLATION_UNAVAILABLE', 'The sandbox did not supply full file-effect enforcement. Partial Windows ACL confinement is refused; nothing is launched.')
-      const isolation = { mode: policy.mode, enforcement: confined.enforcement, source: 'host-sandbox-contract' }
+      const isolation = { mode: policy.mode, enforcement: confined.enforcement,
+        source: guestRunner ? 'configured-guest-runner' : 'host-sandbox-contract' }
       await store.mutate(state => { state.rounds[execution.roundId].executions[execution.id].isolation = isolation })
-      const result = await launchManagedJob(this.ctx, store, execution, { argv: confined.argv, isolation,
+      const result = await launchManagedJob(this.ctx, store, execution, { argv: confined.argv, requested: [...args.argv], isolation,
         cwd: exec.cwd, label: String(args.label ?? args.argv[0]) }, this)
       try { this.assertLiveAdmission(store, execution) } catch {
         await this.stopWithAuthority(store, { roundId: execution.roundId, executionId: execution.id, generation: 1,
           requestId: `late-job:${execution.id}`, reason: 'launch-cancel-race' }, { token: OWNER, source: 'late-job-reap' })
         return { ok: false, code: 'STOP_PENDING', ...result }
       }
-      return { ok: true, ...result }
+      const computed = { ok: true, ...result }
+      // Wait inside the same tool call: the owner session stays alive, so the
+      // Host cannot dispose the job before it settles, and the caller receives
+      // the real exit code without a status-polling turn. A guest-runner job is
+      // waited for by default (bounded), because the owner session is released
+      // at the end of this completion; args.waitMs === 0 restores fire-and-forget.
+      const requested = args.waitMs === undefined ? (hasGuestRunner(sandbox) ? 45000 : 0) : Number(args.waitMs)
+      const waitMs = Math.max(0, Math.min(Number.isFinite(requested) ? requested : 0, 600000))
+      if (!waitMs) return computed
+      // Prefer the Host job settlement notification (live.settlement resolves
+      // after the supervisor exit and the native Job-empty receipt); the ledger
+      // poll is only a fallback for a controller without the live handle.
+      const held = this.live.get(execution.id)
+      const notified = held?.settlement ? await raceSettled(held.settlement, waitMs, exec.signal) : false
+      const waited = notified
+        ? { settled: true, execution: await store.read(state => state.rounds?.[execution.roundId]?.executions?.[execution.id] ?? null) }
+        : await waitForSettled(store, execution.roundId, execution.id, waitMs, exec.signal)
+      if (waited.settled) await this.refresh(store, execution.roundId)
+      const done = waited.execution
+      return { ...computed, wait: { settled: Boolean(waited.settled), aborted: Boolean(waited.aborted),
+        state: done?.state ?? null, outcome: done?.outcome ?? null, exitCode: done?.exitCode ?? null,
+        jobsQuiescent: done?.jobsQuiescent ?? null, deadlineMet: done?.deadlineMet ?? null,
+        stdoutPath: done?.stdoutPath ?? null, stderrPath: done?.stderrPath ?? null,
+        evidenceRefs: done?.evidenceRefs ?? [] } }
     } catch (error) {
       const live = this.live.get(execution.id)
       if (!live?.process) await this.markNeverStarted(store, execution, error.message)
@@ -485,7 +607,7 @@ export class ChainController {
       const live = this.live.get(execution.id)
       // A readable nonce/receipt is correlation, not authority or a supervisor join.
       // After a host restart, absence of this exact capability remains unknown.
-      if (live?.execution.nonce !== execution.nonce || live.providerJoined !== true) continue
+      if (live?.execution?.nonce !== execution.nonce || live.providerJoined !== true) continue
       const proof = await readJobProof(store, execution)
       if (!proof) continue
       await store.mutate(state => {
@@ -517,10 +639,14 @@ export class ChainController {
   }
   guard(execution) {
     try {
-      const exec = resolveExec(this.ctx, execution), store = forCwd(exec.cwd), state = store.snapshot()
+      const exec = resolveExec(this.ctx, execution), store = this.storeForCwd(exec.cwd)
+      if (!exec.bindingValid) return `ROLE_BINDING_INVALID: ${exec.bindingError}`
+      this.assertSessionLocation(store, exec)
+      const state = store.snapshot()
       const found = bindingOf(state, exec.sessionId)
-      if (!found && !exec.role) return undefined
-      if (!found && !state.activeRoundId && exec.role === 'plan') return undefined
+      const protectedScope = Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt))
+      if (!found && !exec.role && !protectedScope) return undefined
+      if (!found && !store.requiresAuthorization && !state.activeRoundId && exec.role === 'plan') return undefined
       const stopped = found && (found.round.control?.resumeBlocked || found.execution.resumeBlocked || this.blocked(store, found.execution))
       if (stopped && !STOP_SAFE.has(execution.name)) return 'RESUME_BLOCKED: only status, exit confirmation and closeout are allowed.'
       if (found && !STOP_SAFE.has(execution.name)) this.assertLiveAdmission(store, found.execution)
@@ -528,6 +654,11 @@ export class ChainController {
         const path = resolve(exec.cwd, String(execution.arguments?.file_path ?? ''))
         const resolved = canonicalCwd(path)
         const canonicalParent = resolve(canonicalCwd(dirname(path)), basename(path))
+        for (const target of [resolved, canonicalParent]) {
+          const rel = relative(store.rootDir, target)
+          if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+            return 'CONTROL_STATE_PROTECTED: controlled writes cannot leave their canonical project root or reach profile authority.'
+        }
         for (const current of [store, ...this.stores.values()]) {
           for (const target of [resolved, canonicalParent]) {
             const rel = relative(current.rootDir, target).replaceAll('\\', '/').toLowerCase()
@@ -535,6 +666,7 @@ export class ChainController {
               return 'CONTROL_STATE_PROTECTED: direct writes to .dsh and .git metadata are not allowed in a controlled round.'
           }
         }
+        if (exec.role !== 'code') return 'ROLE_WRITE_DENIED: only the bound code writer may edit project source; review is read-only.'
       }
       const definition = this.ctx.tools.get(execution.name, execution.agent)
       if (this.allowedDefinitions.has(definition) || this.allowedExecutors.has(definition?.execute)) return undefined
@@ -551,6 +683,21 @@ export class ChainController {
     if (typeof this.ctx.tools?.guard === 'function') this.disposers.push(this.ctx.tools.guard(exec => this.guard(exec)))
     const commands = serviceOf(this.ctx, 'commands')
     if (commands?.register) {
+      this.disposers.push(commands.register({ name: 'chain-authorize', description: '人工预授权并绑定首轮；无模型调用，不允许替换或延长既有项目授权。',
+        input: { hint: '<JSON: authorizationId, goal, budget>' }, recordInput: true,
+        handler: async invocation => {
+          try {
+            const args = JSON.parse(invocation.rawInput.replace(/^\/chain-authorize\s*/, '').trim())
+            const exec = resolveExec(this.ctx, invocation), store = this.storeForCwd(exec.cwd)
+            this.assertSessionLocation(store, exec)
+            const granted = await authorizeProject(store, exec, args, invocation.commandId, this.now())
+            const prior = await store.read(state => ({ active: state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt ? state.activeRoundId : null, everOpened: Object.keys(state.rounds).length > 0 }))
+            // Recover grant-persisted/open-failed bootstrap, never reset a previously opened project.
+            const round = granted.duplicate && prior.everOpened ? { roundId: prior.active, duplicate: true } : await openRound(store, exec, args)
+            await this.attach(store, exec)
+            return { kind: 'success', text: JSON.stringify({ ...granted, ...round }) }
+          } catch (error) { return { kind: 'error', text: `${error.code ?? 'AUTHORIZATION_FAILED'}: ${error.message}` } }
+        } }))
       this.disposers.push(commands.register({ name: 'chain-stop', description: 'Persist a round stop and confirm Agent/job exits without model reasoning.',
         input: { hint: '<roundId> <requestId> <reason>' }, recordInput: true,
         handler: async invocation => {
@@ -558,7 +705,7 @@ export class ChainController {
             const raw = invocation.rawInput.replace(/^\/chain-stop\s*/, '').trim()
             const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(raw)
             if (!match) fail('BAD_ARGS', 'Use /chain-stop <roundId> <requestId> <reason>.')
-            const exec = resolveExec(this.ctx, invocation), store = forCwd(exec.cwd)
+            const exec = resolveExec(this.ctx, invocation), store = this.storeForCwd(exec.cwd)
             const result = await this.stopWithAuthority(store, { roundId: match[1], requestId: match[2], reason: match[3] },
               { token: USER, source: 'human-command' })
             return { kind: 'success', text: JSON.stringify(result) }

@@ -171,6 +171,8 @@ section('installRouting')
     's-standard': { id: 's-standard', agentPreset: 'standard', cwd: DIR },
   }
 
+  const sessions = Object.fromEntries(Object.entries(headers).map(([id, header]) => [id, { id, header }]))
+  const agents = Object.fromEntries(Object.keys(headers).map(id => [id, { id, ctx: Object.freeze({ id }) }]))
   let handler = null
   const ctx = {
     on(name, fn) {
@@ -181,8 +183,10 @@ section('installRouting')
       }
     },
     get(name) {
-      if (name !== 'sessions') return undefined
-      return { get: (id) => (headers[id] ? { header: headers[id] } : undefined) }
+      if (name === 'sessions') return { get: id => sessions[id] }
+      if (name === 'agents') return { get: id => agents[id] }
+      if (name === 'agentPresets') return { composedPreset: context => Object.values(agents).find(agent => agent.ctx === context) ? headers[context.id].agentPreset : undefined }
+      if (name === 'sessionProjections') return { stateOf: (session, key) => sessions[session.id] === session && key === 'agentPreset' ? session.header.agentPreset : undefined }
     },
   }
 
@@ -190,20 +194,20 @@ section('installRouting')
   check('registers a listener', typeof handler === 'function')
 
   const base = { provider: 'default', model: 'default' }
-  const plan = await handler({ agent: { id: 's-plan' } }, async () => base)
+  const plan = await handler({ agent: agents['s-plan'] }, async () => base)
   check('plan gets the strong route', plan.provider === 'strong' && plan.model === 'big')
   check('the base config is untouched', base.provider === 'default')
 
-  const code = await handler({ agent: { id: 's-code' } }, async () => base)
+  const code = await handler({ agent: agents['s-code'] }, async () => base)
   check('code gets the cheap route', code.model === 'small')
 
-  const standard = await handler({ agent: { id: 's-standard' } }, async () => base)
+  const standard = await handler({ agent: agents['s-standard'] }, async () => base)
   check('a non-role session is not routed', standard.provider === 'default')
 
-  const unknown = await handler({ agent: { id: 'ghost' } }, async () => base)
-  check('a missing header is not routed', unknown.provider === 'default')
+  await assert.rejects(handler({ agent: { id: 'ghost' } }, async () => base), error => error.code === 'ROLE_BINDING_INVALID')
+  check('an unregistered Agent is rejected rather than routed permissively', true)
 
-  const manual = await handler({ agent: { id: 's-plan' } }, async () => ({ provider: 'picked', model: 'by-user' }))
+  const manual = await handler({ agent: agents['s-plan'] }, async () => ({ provider: 'picked', model: 'by-user' }))
   check('a manual pick is respected', manual.provider === 'picked')
 
   const described = describeRoutes(ctx, { sessionId: 's-code', role: 'code', cwd: DIR }, routing.tracker)
@@ -285,4 +289,6 @@ section('validateRoutes')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
-process.exit(failed === 0 ? 0 : 1)
+// Entry guard: test/run.mjs imports this file in-process, so a failing self-test must not
+// claim the process exit code for itself (see test/api.mjs).
+if (failed > 0) process.exitCode = 1

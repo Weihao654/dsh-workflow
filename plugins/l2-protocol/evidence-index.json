@@ -1,0 +1,373 @@
+{
+  "version": "0.2.1-rc.20261107.40",
+  "verdict": "PARTIAL / NOT DEPLOYABLE",
+  "candidate": "dsh-role-chain-rc-20261106-r8",
+  "candidateCommit": null,
+  "sourceBaseCommit": "b4f8057f9dfbf0b14446f21b795d61fc569a3de2",
+  "mainReport": "ACCEPTANCE.md",
+  "fingerprints": "../../FILE-FINGERPRINTS.json",
+  "generatedAt": "2026-11-07T00:56:51.110Z",
+  "supersedes": "0.2.1-rc.20261102.16",
+  "legacyEvidence": "r1/r2/r3 reports and manifests are archived under C:\\Users\\Weihao Chen\\Desktop\\DSH\\_archive-20261103; they are not acceptance evidence for this version.",
+  "status": {
+    "fixtureSuite": {
+      "verified": true,
+      "result": "per-file run against the expected table: 14 files / 116 cases all pass, 0 fail, 0 skipped; api.mjs exit 0, routes.mjs exit 0",
+      "scope": "frozen .40 tree; profile-dir.mjs (4 cases) added; the .40 isolated-install copy was verified against the frozen manifest (58 plugin files; 64 installed files including the 6 preset files; 0 mismatch)",
+      "verifiedAt": "2026-11-07",
+      "method": "_work/run-inprocess-40.txt (outside the candidate): node test/run.mjs --in-process → 116 pass / 0 fail / 0 skipped, 14 files; the per-file spawn mode is refused by this sandbox (EPERM) and is not exercised on this host"
+    },
+    "nativeSuite": {
+      "verified": true,
+      "result": "node test/run.mjs --native → 18 files pass, exit 0: real Windows Job + real windows-supervisor.ps1, real WSL+bwrap; windows.mjs and evidence-native.mjs each carry a counted node:test guard so deleting their cases fails",
+      "limitation": "windows.mjs and evidence-native.mjs stub sandbox.confine with a fake-full contract: containment/job semantics are verified, OS file isolation is NOT",
+      "evidenceNativeGuard": "both native receipt cases counted by a node:test wrapper (.28)"
+    },
+    "optInSymlinkSuite": {
+      "verified": false,
+      "result": "test/receipt-symlink.mjs: 1 case, skipped on this host (link creation EPERM); skipped is not a pass and it is outside the default gate"
+    },
+    "realHostToolEntry": {
+      "verified": false,
+      "result": "never executed for .39+; only .16 r4w historical evidence exists"
+    },
+    "realModelRound": {
+      "verified": false,
+      "result": "never executed for .39+; only .16 r4w historical evidence (24 requests, 344,984 tokens, closeout partial)"
+    },
+    "closeRound": {
+      "verified": true,
+      "result": "fixture + probes: delivered requires every review verdict \"pass\"; commit must be 7+ hex or \"(no-git)\"; blank uncovered refused; every command row must carry jobId + receiptDigest and its receipt is re-verified at close, so a row that cannot be re-verified now blocks the close instead of being skipped",
+      "scope": "fixture level; real Host tool entry not executed"
+    },
+    "receiptTrust": {
+      "verified": true,
+      "result": "forged/decoy/outside-dir/directory/missing/corrupt/tampered/never-launched/junction receipts refused (JOB_PROOF_*); file-symlink case unverified on this host; receipts carry no signature, so a same-user writer with store access can forge both receipts and the ledger (disclosed, outside the tool-level threat model)",
+      "scope": "fixture + directory-junction probe"
+    },
+    "bridgeTransport": {
+      "verified": true,
+      "result": "exactly two production wsl.exe spawns, both via buildWslArgs; --exec /usr/bin/bwrap (no distro shell); distro regex, full-payload argv guard ($, backtick, NUL, CR/LF), env key/value guard; ; | && quotes stay literal; sandbox-external marker probes found no injected file",
+      "limitation": "guest processes may outlive a killed wsl.exe; TAB and other C0 controls beyond CR/LF/NUL are not enumerated; other WSL builds untested"
+    },
+    "cancelTimeoutDescendant": {
+      "verified": "partial",
+      "result": "mechanism-level only: native Windows Job tests cover deadline, durable stop ordering, TerminateJobObject and Job-empty receipts; real Host tool entry for chain_stop/cancel has not been executed"
+    }
+  },
+  "budget": {
+    "historical": {
+      "approvedRequests": 60,
+      "usedRequests": 65,
+      "status": "overrun-recorded-not-waived",
+      "approvedTokens": 3500000,
+      "usedTokens": 640251,
+      "cost": "unknown"
+    },
+    "currentRound": {
+      "authorizationId": "r4k-accept-1",
+      "roundId": "R-39130f1e",
+      "requestsUsed": 7,
+      "requestsApproved": 8,
+      "tokensUsed": "unknown (per-turn UI readings only: ~18.3K and ~20.3K tokens)",
+      "status": "deadline-expired-with-1-request-left",
+      "cost": "unknown"
+    },
+    "checker": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\_budget\\budget-check.mjs; last result BUDGET_CHECK=BLOCKED reason=new-round-requests-exhausted",
+    "thisRoundTargetModelRequests": 0,
+    "thisRoundMaintenance": "development, probes and offline tests only; fee unknown",
+    "r4jRound": {
+      "authorizationId": "r4j-compute-1",
+      "roundId": "R-31348312",
+      "requestsUsed": 11,
+      "requestsApproved": 20,
+      "tokensUsed": 85802,
+      "status": "superseded-by-r4k"
+    }
+  },
+  "evidence": [
+    {
+      "id": "r4-deterministic-full",
+      "path": "plugins/l2-protocol/test/",
+      "command": "node --test --test-isolation=none test/{authorization,authority-guard,role-binding,request-gate,control,dispatch,usage,git,windows,bridge}.mjs",
+      "exitCode": 0,
+      "tests": 58,
+      "passed": 58,
+      "failed": 0,
+      "note": "includes 4 native Windows Job/supervisor scenarios and 6 bridge unit tests"
+    },
+    {
+      "id": "r4-routes",
+      "path": "plugins/l2-protocol/test/routes.mjs",
+      "exitCode": 0,
+      "passed": 58,
+      "failed": 0
+    },
+    {
+      "id": "r4-api",
+      "path": "plugins/l2-protocol/test/api.mjs",
+      "exitCode": 0,
+      "passed": 38,
+      "failed": 0
+    },
+    {
+      "id": "b1-live-denial-matrix",
+      "path": "plugins/l2-protocol/test/bridge-live.mjs",
+      "command": "node --test --test-isolation=none test/bridge-live.mjs",
+      "exitCode": 0,
+      "tests": 10,
+      "passed": 10,
+      "failed": 0,
+      "durationMs": 5221.61,
+      "environment": "Windows 11 + WSL2 Ubuntu, bwrap 0.11.1; temporary workspaces under %TEMP%, removed after each case",
+      "summary": "R-A..R-J: workspace-scoped writes, read-only mode, /etc refusal, symlink escape refusal, PE interop refusal, /mnt hidden, loopback-only network, exact exit code, timeout, outside-path refusal"
+    },
+    {
+      "id": "b1-hardening-probes",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\.bridge-test\\probe4.sh, probe5.sh, probe6.sh, probe7.sh",
+      "summary": "raw bwrap probes that established: /srv bind works, hiding /mnt removes Windows drives, masking /init does NOT stop interop, hiding /run DOES stop it (UtilConnectUnix), clearenv alone does not"
+    },
+    {
+      "id": "r4-isolated-host-mount",
+      "path": "plugins/l2-protocol/lib/index.js:26-29",
+      "summary": "route registered after registerTools/controller.install; live 200 with enabled=true proves the plugin applied on a real Host"
+    },
+    {
+      "id": "r4v-plan-zero-token",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4v-20261103T1556\\home\\storages\\sessions\\session-235d6d24-7c2f-47ee-a5d5-1b025fac79ef.json",
+      "summary": "agentPreset=plan, cwd under test work dir, tokenUsage totals 0"
+    },
+    {
+      "id": "r4h-ledger-final",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4h-20261103T1933\\logs\\evidence\\state-final.json",
+      "summary": "35 request rows, 5 executions, 5 sessions, authorization r4h-accept-1, closeout null"
+    },
+    {
+      "id": "r4h-evidence-summary",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4h-20261103T1933\\logs\\evidence\\evidence-summary.json",
+      "summary": "per-request role/status/tokens, session presets and response prefixes; BOM original kept, BOM-free copy evidence-summary.bomfree.json"
+    },
+    {
+      "id": "r4h-artifact",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4h-20261103T1933\\logs\\evidence\\sum.mjs.final",
+      "summary": "1329 B sha256 32a11dc583facc4ca21d44d53f6b3d494a54acce89330b9e5040abd9339515ee"
+    },
+    {
+      "id": "r4h-standard-rejection",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4e-20261103T1642\\home\\sessions\\",
+      "summary": "session-a04a243e refused chain-authorize and protected model I/O; same-env mounted-plan session-db454d88 succeeded -> rejection is binding-based, not 'standard always denied'"
+    },
+    {
+      "id": "independent-review-r4",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\_reports\\INDEPENDENT-REVIEW-r4-20261103.md",
+      "summary": "read-only non-author review, verdict partial, R-01..R-12"
+    },
+    {
+      "id": "b-isolation-assessment",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\_reports\\B-ISOLATION-ASSESSMENT-20261103.md",
+      "summary": "B0 upstream / B1 runnerCommand+WSL bwrap / B2 Host on Linux / B3 container-remote; read-only assessment"
+    },
+    {
+      "id": "b1-plan",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\_reports\\B1-WSL-BWRAP-PLAN-20261103.md",
+      "summary": "executable engineering plan incl isolation matrix R1-R10 and the R5 Windows-interop escape vector"
+    },
+    {
+      "id": "r4i-host-path-matrix",
+      "what": "Host-path sandbox wiring: sandbox-local runnerCommand -> bridge runner -> wsl bwrap, 11 behavioural cases plus service/enforcement records",
+      "path": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4i-20261103T2155\\logs\\evidence\\host-path-denial-matrix.jsonl",
+      "verdict": "proven at the upstream Host path; chain_compute itself not exercised"
+    },
+    {
+      "id": "r4k-chain-attempt",
+      "path": "C:/Users/Weihao Chen/Desktop/DSH/r4k-20261104T0915/logs/evidence/state-r4k.json",
+      "note": "real plan turns only: 7/8 requests, 0 executions dispatched, 0 chain_compute jobs; chain_open_round refused with 'Close the existing round; do not reset its deadline or usage.'; chain_close_round refused with No original T0 / failure limits / missing command / missing review"
+    },
+    {
+      "id": "r4k-round-lifecycle-fix",
+      "path": "plugins/l2-protocol/test/smoke.mjs",
+      "command": "node --test --test-isolation=none test/smoke.mjs",
+      "result": "4/4 pass, including abortedEmpty close and the still-rejected case with a dispatched child"
+    },
+    {
+      "id": "r4k-guest-runner-fix",
+      "path": "plugins/l2-protocol/test/compute-guest.mjs",
+      "command": "node --test --test-isolation=none test/compute-guest.mjs",
+      "result": "4/4 pass"
+    },
+    {
+      "id": "r4l-supervisor-maxpath-fix",
+      "kind": "defect-fix+layer-verification",
+      "detail": "Real r4l chain_compute job J-373624c3 reached the supervisor with the guest runner spec and failed only on a 260-char MAX_PATH temp name; temp suffix shortened to 8 hex; rerunning the same spec produced receipt jobEmpty=true exitCode=7, stdout COMPUTE_OK, stderr BRIDGE_EXIT child=7.",
+      "paths": [
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4l-20261104T1155\\\\home\\\\profiles\\\\r4test\\\\role-chain-authority\\\\5e6ddc06d2b290e96bea5d53ab0539794c00c90e721fe1ab1c23d84b9ddd325e\\\\executions\\\\R-f5db0336\\\\J-373624c3-5bbc-48e2-8fd2-d8447eaaf0de\\\\spec.json",
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4l-20261104T1155\\\\home\\\\profiles\\\\r4test\\\\role-chain-authority\\\\5e6ddc06d2b290e96bea5d53ab0539794c00c90e721fe1ab1c23d84b9ddd325e\\\\executions\\\\R-f5db0336\\\\J-373624c3-5bbc-48e2-8fd2-d8447eaaf0de\\\\receipt.json"
+      ],
+      "verified": "supervisor layer (real plugin-created spec); plugin end-to-end return path still pending"
+    },
+    {
+      "id": "r4m-real-compute-end-to-end",
+      "kind": "real-host-provider-chain",
+      "detail": "plan→work through the real tool entry created job J-b55a6dd0 with the guest-runner spec; receipt jobEmpty=true exitCode=7; stdout COMPUTE_OK; stderr BRIDGE_EXIT child=7; plugin recorded completed/exitCode 7 and work completed after receiving the result. Cases (b)/(c) not reached: 12/12 requests exhausted.",
+      "paths": [
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4m-20261104T1225\\\\logs\\\\evidence\\\\state-r4m.json",
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4m-20261104T1225\\\\logs\\\\evidence\\\\job-J-b55a6dd0-receipt.json",
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4m-20261104T1225\\\\logs\\\\evidence\\\\job-J-b55a6dd0-stdout.txt",
+        "C:\\\\Users\\\\Weihao Chen\\\\Desktop\\\\DSH\\\\r4m-20261104T1225\\\\logs\\\\evidence\\\\job-J-b55a6dd0-stderr.txt"
+      ],
+      "verified": "plugin end-to-end for normal output + non-zero exit; refusal cases pending"
+    },
+    {
+      "id": "r4s-a-segment",
+      "kind": "real-host-provider-chain",
+      "env": "C:\\Users\\Weihao Chen\\Desktop\\DSH\\r4s-20261104T2000",
+      "round": "R-c678e974",
+      "detail": "One dispatch turn on deepseek-official/deepseek-flash low; four real chain_compute jobs with native Job-empty receipts (exit 0/7/1/1) and one review pass; round NOT closed because no command evidence was recorded and the 16-request budget was exhausted."
+    },
+    {
+      "id": "r4-fix-job-bound-command-evidence",
+      "kind": "defect-fix",
+      "detail": "chain_record_evidence accepts {jobId} for command evidence and derives command/exitCode/evidenceRef/outcome from the recorded job execution; unknown/unsettled/exit-less jobs refused; deterministic test added (smoke 13/13)."
+    },
+    {
+      "id": "lifecycle-owner-disposal-trace",
+      "kind": "code+ledger",
+      "summary": "Owner-session disposal cancelled r4v jobs; dsh-jobs contract documents owner disposal cancelling live work."
+    },
+    {
+      "id": "bounded-wait-native-proof",
+      "kind": "deterministic+native",
+      "summary": "compute(waitMs) settles in-call with real exit code 7 through windows-supervisor.ps1; timeout stays supervised then cancels."
+    }
+  ],
+  "defects": {
+    "open": [
+      "round closure: no real round closed yet; abortedEmpty close is unit-tested, not exercised against a live Host",
+      "no live evidence yet for review write refusal or chain_stop",
+      "chain_compute still not executed end to end through the real tool entry (r4k dispatched nothing)",
+      "r4k used 7 of 8 requests with 0 compute executions; its authorization deadline expired",
+      "distro lacks node/build toolchain (install would need approval)",
+      "chain_compute plugin end-to-end return (readJobProof -> tool result) not re-run after the .11 fix; needs one authorized run",
+      "chain_status full lossless fix verified only by unit sanitizer + suite; live call not re-run after .12",
+      "workspace-write and /etc denials, cancel/timeout via tool entry, close/gate/stop and review write refusal still lack live evidence",
+      {
+        "id": "round-closure-not-yet-proven",
+        "detail": "No round has reached chain_close_round; gate/close/stop live evidence still pending a funded round."
+      },
+      "No real Host tool-entry round or real model round has been executed for .23+; real-model evidence is .16 r4w history only."
+    ],
+    "fixed": [
+      "R-01: tree frozen after review; the .5 snapshot is preserved in the review report and superseded list",
+      "R-02/R-03/R-04: ACCEPTANCE and this index rewritten; manifest hash referenced programmatically",
+      "R-08/R-10/R-12: version unified from package.json; BOM-free summary copy; bridge/ listed in package.json.files",
+      "R-11: r4f ledger authorization id mismatch documented",
+      "interop escape: proven closable at the bridge layer by hiding /run (R-E)",
+      "guest runner resolution: host-side resolveExecutable(argv[0]) rejected guest commands (sh was not found on PATH); compute() now skips resolution when a guest runner is configured and falls back to a full-enforcement sandbox probe; test/compute-guest.mjs 4 cases",
+      "round lifecycle deadlock: a /chain-authorize bootstrap round could be neither closed (needs T0/evidence) nor followed by a new round; closeRound now closes it as abortedEmpty when no other execution, no baseline and no evidence exist, and still refuses once a child ran; test/smoke.mjs 2 cases",
+      "windows-supervisor.ps1 temp name exceeded MAX_PATH under the isolated profile path (fixed in .11: 8-hex suffix)",
+      "chain_status({detail:'full'}) returned non-lossless JSON (Date/NaN/BigInt/cycles); lib/lossless.js now sanitizes before return (fixed in .12)",
+      {
+        "id": "command-evidence-cannot-see-job-exit",
+        "status": "fixed-in-0.2.1-rc.20261102.14",
+        "detail": "Work could not observe integer exit codes from a finished job, so no command evidence could be recorded. Job-bound evidence removes that gap without fabricating values."
+      }
+    ],
+    "kept": [
+      "R-09: test-count wording distinguishes the candidate suite from the reviewer's note"
+    ]
+  },
+  "scopeLimits": [
+    "Windows ACL sandbox is officially partial; the plugin still refuses it by design",
+    "same-Windows-user processes and unconfined reads remain outside the policy gate's coverage",
+    "no provider billing receipt -> cost unknown, never reported as zero",
+    "provider-internal retries are not observable by the plugin",
+    "GUI interaction was driven through a local CDP client, not a human session",
+    "deployment to the live desktop DSH, installation, rollback drill and post-install verification were not performed",
+    "the bridge is wired in one isolated profile only; the desktop profile is untouched"
+  ],
+  "budgetAdmission": {
+    "verifiedInCode": true,
+    "paths": [
+      "lib/usage.js reserveRequest",
+      "lib/authorization.js assertProjectAdmission",
+      "lib/runtime.js usageTotals"
+    ],
+    "tests": {
+      "file": "test/budget-admission.mjs",
+      "count": 11,
+      "result": "pass"
+    },
+    "covers": [
+      "pending reservation blocks concurrent admission",
+      "settled+pending gate next request",
+      "settlement above reservation charged and blocks",
+      "unknown receipt keeps reservation",
+      "rebuilt store keeps pending reservation",
+      "failed attempts consume slots, N+1 refused"
+    ],
+    "notProven": [
+      "provider tokenization can exceed the byte-based input estimate (no hard token bound)",
+      "one request whose true usage exceeds its reservation can overshoot the cap before later requests are blocked",
+      "billed money is unknown (no invoice)"
+    ],
+    "correction": "R-d0ca7610 used 326,868 tokens of 500,000; the earlier 653,736 figure double counted disjoint buckets plus totalTokens"
+  },
+  "lifecycleWait": {
+    "supported": true,
+    "mechanism": "Host job settlement notification (live.settlement) preferred; bounded durable-ledger fallback",
+    "ownerDisposalRule": "@deepseek-ai/dsh-jobs: owner/service disposal cancels live work and awaits producers",
+    "jobOwner": "execution.ownerSessionId (work/code agent session)",
+    "waitMsRangeMs": [
+      0,
+      600000
+    ],
+    "consumesModelRequest": false,
+    "timeoutBehaviour": "returns settled:false; execution unchanged, no fabricated receipt",
+    "verifiedBy": [
+      "test/windows.mjs same-call bounded wait (real native Job, exit 7)",
+      "test/windows.mjs bounded wait timeout then cancel"
+    ],
+    "notVerified": [
+      "live Host tool entry with a real model turn",
+      "9p hard-link read boundary",
+      "Windows Job layer above the supervisor (Host job container itself)"
+    ]
+  },
+  "historical": "This index used to carry .16-era results (.10/.11 suites, r4h repair loop, r4v/r4h Host mounts) with verified:true. Those rows were stale for this build and have been replaced by .27 measurements. The .16 real-Host and real-model evidence lives in _reports/ and HANDOFF.md §10, and is NOT evidence for .27.",
+  "closeoutReserve": {
+    "enforced": true,
+    "defaults": {
+      "requests": 6,
+      "timeMs": 120000,
+      "inputFloor": 8192
+    },
+    "codes": [
+      "CLOSEOUT_RESERVE_PROTECTED",
+      "CLOSEOUT_WINDOW_TOO_SMALL"
+    ],
+    "limitation": "holds are counted in admission only; tokens spent above the reservation still settle at the provider receipt",
+    "verifiedBy": [
+      "test/closeout-reserve.mjs (18 cases, real authorityRoot)",
+      "test/budget-admission.mjs (11 cases)",
+      "_work/rehearsal-v30.mjs → _reports/v30-rehearsal-output.txt (outside the candidate)",
+      "_work/replay-p1-closeout-v2.mjs → _work/replay-p1-closeout-v2-output.txt (outside the candidate; .38 refusal reproduced, .39 admitted 257,704 <= 384,255 on the real ledger)"
+    ],
+    "tokenSide": "capped at half of the round token budget (never below one request); the slot promise is grant-only and is never recomputed from funded tokens (.39)"
+  },
+  "openDefect": "no real Host tool entry and no real model round on .39; the original P1 round R-e214c77e remains unclosed by design (the fix is not retroactively applied to it); cancel, deadline, descendant exit and review write refusal are fixture/code level only",
+  "evidenceNote": "The _reports/ and _work/ paths cited by this index live in the workspace and are deliberately outside the frozen candidate; only files inside the candidate are covered by FILE-FINGERPRINTS.json.",
+  "p1Replay": {
+    "round": "R-e214c77e",
+    "observation": "real short job + command evidence + independent review + four quiescent executions, then CLOSEOUT_RESERVE_PROTECTED at 235,937/800,000 tokens; the round stayed unclosed and was not backfilled",
+    "oldLogic": ".38 recomputed the request count as floor(tokens/perRequest), so the hold fell to 5 x 47,410 = 237,050 while four admitted closing draws had spent 210,294; the fifth draw (47,410) was refused",
+    "newLogic": ".39 holds 5 x 76,851 = 384,255 (review estimate 72,755 sizes it; the drawing request is judged with its own pending input) and admits the interrupted close at 257,704",
+    "replayLimit": "the persisted ledger also carries a later deadline stop, so the decisive request cannot be replayed against it directly; the replay rewinds only that stop on a throwaway copy and the original state.json sha256 is verified unchanged",
+    "scope": "reconstruction, not a live Host reproduction; no real Host tool entry and no model request on .39"
+  },
+  "desktopBoot": {
+    "version": "0.2.1-rc.20261107.40",
+    "change": "resolveProfileDir: DSH_PROFILE_DIR first, else derive from <profile>/node_modules/dsh-role-chain-protocol via import.meta.url, validated by dsh.profile.bundles; otherwise fail closed with AUTHORITY_LOCATION_REQUIRED",
+    "failedBoot": ".39 installed to the daily desktop profile threw AUTHORITY_LOCATION_REQUIRED at plugin load (desktop-next-2026-11-07.0.jsonl); rolled back to the 0.2.0-rc.1 junction",
+    "verification": "unit tests test/profile-dir.mjs (4 cases) pin the resolver branches; an isolated CLI Host built from the frozen tree and launched WITHOUT DSH_PROFILE_DIR (profile r40test, port 18786) booted clean and served GET /role-chain/api/table → 200 {\"ok\":true}, i.e. apply() completed with no launcher variable (r40i rehearsal). The daily desktop profile boot is recorded separately in _reports/R40-INSTALL-RESULT-20261107.md once the user restarts the app."
+  }
+}

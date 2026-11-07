@@ -1,8 +1,19 @@
 {
   "name": "dsh-role-chain-protocol",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.1-rc.20261107.40+scopefix.1",
   "description": "Fourteen role-chain tools for controlled round execution, durable stop intent, fixed deadlines, request usage accounting and independent evidence. Compute requires full read-only confinement; partial backends are refused.",
-  "files": ["lib/", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "DESIGN.md", "ACCEPTANCE.md", "test/results/windows.json"],
+  "files": [
+    "lib/",
+    "bridge/",
+    "test/",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "DESIGN.md",
+    "ACCEPTANCE.md",
+    "evidence-index.json"
+  ],
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

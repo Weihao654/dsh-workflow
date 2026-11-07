@@ -1,21 +1,33 @@
 // One row per observable llm/stream attempt, including retries/interruption.
 // Context-pressure tokenMeter is not a spend counter; no invoice is invented.
-import { assertAdmissible, budgetOf, bindingOf, DEFAULT_OUTPUT_CAP, iso, newId, usageTotals } from './runtime.js'
+import { assertAdmissible, budgetOf, bindingOf, closeoutReady, closeoutReserveOf, closeoutSpentOf, DEFAULT_OUTPUT_CAP, iso, newId, noteEstimate, usageTotals } from './runtime.js'
 import { fail } from './errors.js'
 import { resolveExec } from './roles.js'
 import { forCwd } from './store.js'
 import { serviceOf } from './host.js'
+import { assertProjectAdmission } from './authorization.js'
 
 export function inputReservation(options) {
   // Byte-size plus overhead is an estimate, not a tokenizer or an absolute ceiling.
   return Buffer.byteLength(JSON.stringify({ messages: options.messages, system: options.system, tools: options.tools }), 'utf8') + 1024
 }
 export function normalizeUsage(value) {
-  if (!value || !Number.isSafeInteger(value.inputTokens) || !Number.isSafeInteger(value.outputTokens) || value.inputTokens < 0 || value.outputTokens < 0) return null
-  const totalTokens = value.totalTokens ?? value.inputTokens + value.outputTokens
-  if (!Number.isSafeInteger(totalTokens) || totalTokens < value.inputTokens + value.outputTokens) return null
-  const usage = { inputTokens: value.inputTokens, outputTokens: value.outputTokens, totalTokens }
-  for (const name of ['cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens']) if (Number.isSafeInteger(value[name]) && value[name] >= 0) usage[name] = value[name]
+  if (!value) return null
+  const usage = {}
+  for (const name of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']) {
+    const count = value[name] ?? (name.startsWith('cache') ? 0 : undefined)
+    if (!Number.isSafeInteger(count) || count < 0) return null
+    usage[name] = count
+  }
+  // Host buckets are disjoint; reasoning is already part of output.
+  const sum = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens
+  if (!Number.isSafeInteger(sum)) return null
+  if (value.totalTokens !== undefined && value.totalTokens !== sum) return null
+  if (value.reasoningTokens !== undefined) {
+    if (!Number.isSafeInteger(value.reasoningTokens) || value.reasoningTokens < 0 || value.reasoningTokens > usage.outputTokens) return null
+    usage.reasoningTokens = value.reasoningTokens
+  }
+  usage.totalTokens = value.totalTokens ?? sum
   return usage
 }
 function receipt(request, usage, outcome, now) {
@@ -24,9 +36,28 @@ function receipt(request, usage, outcome, now) {
     if (JSON.stringify(request.usage) !== JSON.stringify(normalized) || request.outcome !== outcome) fail('REQUEST_ID_CONFLICT', 'A settled request cannot receive a different final receipt.')
     return true
   }
+  if (request.status === 'failed') {
+    if (JSON.stringify(request.usage) !== JSON.stringify(normalized) || request.outcome !== outcome) fail('REQUEST_ID_CONFLICT', 'A failed request cannot receive a different final receipt.')
+    return true
+  }
   request.usage = normalized
   request.outcome = outcome
   request.endedAt = iso(now)
+  if (outcome === 'failed' && !normalized) {
+    // A terminal provider failure never produced a usage receipt. Charge the
+    // reservation upper bound so the attempt is not counted as zero and does not
+    // poison every later request as open-ended uncertainty.
+    if (Number.isSafeInteger(request.reservedTokens) && request.reservedTokens >= 0) {
+      request.status = 'failed'
+      request.chargeTokens = request.reservedTokens
+      request.pendingReason = null
+      request.uncertainty = 'terminal-failure-charged-upper-bound'
+    } else {
+      request.status = 'pending'
+      request.pendingReason = 'Terminal failure without a bounded reservation.'
+    }
+    return false
+  }
   request.status = normalized && outcome === 'completed' ? 'settled' : 'pending'
   request.pendingReason = request.status === 'pending' ? (normalized ? 'Interrupted; additional provider usage is unknown.' : 'No complete provider usage receipt.') : null
   return false
@@ -46,14 +77,74 @@ export async function reserveRequest(store, identity, requestId, options, now = 
       return { duplicate: true, request: prior }
     }
     if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || !Number.isSafeInteger(options.inputTokens) || options.inputTokens < 0) fail('BAD_RESERVATION', 'Reserve estimated input and capped output before provider I/O.')
-    const totals = usageTotals(round), limit = budgetOf(round).tokens
+    const limits = budgetOf(round)
+    // Every reserved attempt remains a row, including failure, interruption and retry. The ceiling
+    // adds the closeout reserve because those slots are held for the closing sequence and are
+    // charged there (see closeoutSpentOf); ordinary work is kept below limits.requests below.
+    const reserve = closeoutReserveOf(round)
+    if (Object.keys(round.usage.requests).length >= limits.requests + reserve.requests)
+      fail('REQUEST_BUDGET_REACHED', 'No observable model attempt slots remain.')
+    if (options.maxTokens > limits.outputCap) fail('OUTPUT_CAP_EXCEEDED', 'The frozen stream request exceeds its authorized output cap.')
+    const totals = usageTotals(round), limit = limits.tokens
     const reservedTokens = options.inputTokens + options.maxTokens
-    if (limit && (totals.attributionUnknown || totals.unknownReservations || totals.totalTokens + totals.pendingReserved + reservedTokens > limit)) fail('TOKEN_BUDGET_REACHED', 'Known usage, uncertainty or pending reservations leaves no room for this request.')
+    if (!Number.isSafeInteger(reservedTokens)) fail('BAD_RESERVATION', 'Reservation overflow.')
+    // The closing sequence must stay affordable once ordinary room is gone: the review run, the
+    // evidence write and the closing call may draw on the reserve, while ordinary work must leave it
+    // untouched. Since .34 a plan holding command evidence may dispatch the missing review, so a round
+    // that ran out after work closed can still finish; before that evidence the old limit stands.
+    // Nothing here bypasses the grant: the project envelope is asserted either way.
+    const spent = closeoutSpentOf(round)
+    const hasCommandEvidence = round.evidence.some(row => row.layer === 'command')
+    const closingRole = execution.role === 'review' || (execution.role === 'plan' && hasCommandEvidence)
+    // A closing request's own input estimate is written into round.usage.estimates by noteEstimate
+    // at the end of this same transaction. Judge the draw against a hold that includes it, so a
+    // request larger than the pre-draw hold cannot slip through and leave the rest of the closing
+    // turn uncovered (the P1 failure shape: four draws averaged above the per-request estimate).
+    const closingReserve = closingRole ? closeoutReserveOf(round, options.inputTokens) : reserve
+    const remainingMs = round.time ? Math.max(0, Date.parse(round.time.deadlineAt) - now) : Number.POSITIVE_INFINITY
+    const windowOpen = remainingMs === Number.POSITIVE_INFINITY || remainingMs > reserve.timeMs
+    const slotsFree = limits.requests - Object.keys(round.usage.requests).length
+    const ordinarySlots = slotsFree - 1 - reserve.requests >= 0
+    const projected = totals.totalTokens + totals.pendingReserved + reservedTokens
+    const ordinaryTokens = !limit || (!totals.attributionUnknown && !totals.unknownReservations && projected + reserve.tokens <= limit)
+    let closing = false
+    if (!(ordinarySlots && windowOpen && ordinaryTokens)) {
+      if (closingRole) {
+        if (spent.requests + 1 > closingReserve.requests)
+          fail('CLOSEOUT_RESERVE_PROTECTED', 'The closeout reserve has no request left; report the real state instead of looping.')
+        if (spent.tokens + reservedTokens > closingReserve.tokens)
+          fail('CLOSEOUT_RESERVE_PROTECTED', 'The closeout reserve cannot cover another request of this size.')
+        closing = true
+      } else {
+        // Report the genuine limit first: the reserve codes only describe a round that still has
+        // room for its closing sequence but not for more ordinary work.
+        if (projected > limit || totals.attributionUnknown || totals.unknownReservations)
+          fail('TOKEN_BUDGET_REACHED', 'Known usage, uncertainty or pending reservations leaves no room for this request.')
+        if (slotsFree < 1) fail('REQUEST_BUDGET_REACHED', 'No observable model attempt slots remain.')
+        if (!windowOpen) fail('CLOSEOUT_WINDOW_TOO_SMALL', 'The remaining round time is inside the closeout reserve; close or stop instead of starting new work.')
+        fail('CLOSEOUT_RESERVE_PROTECTED', 'This request would eat the closeout reserve; if command evidence already exists the plan may dispatch review and close from the reserve. An empty round (nothing dispatched) can still be closed as abortedEmpty; a dispatched round without command and review rows cannot close.')
+      }
+    }
+    if (store.requiresAuthorization) {
+      assertProjectAdmission(state, now, reservedTokens)
+      if (!closing) {
+        try { assertProjectAdmission(state, now, reservedTokens + reserve.tokens) }
+        catch (error) {
+          if (error.code === 'PROJECT_TOKEN_BUDGET_REACHED')
+            fail('CLOSEOUT_RESERVE_PROTECTED', 'The project token envelope has no room left above the closeout reserve; close instead of starting new work.')
+          throw error
+        }
+      }
+    }
+    if (limit && projected > limit)
+      fail('TOKEN_BUDGET_REACHED', 'Known usage, uncertainty or pending reservations leaves no room for this request.')
     const request = { id: requestId, ...identity, role: execution.role, phase: execution.phase,
       provider: options.provider, model: options.model, purpose: options.purpose ?? 'agent',
       reservedTokens, inputEstimate: options.inputTokens, outputCap: options.maxTokens,
       estimate: true, fingerprint, status: 'pending', startedAt: iso(now), usage: null }
     round.usage.requests[requestId] = request
+    if (closing) round.usage.closeout = { requests: spent.requests + 1, tokens: spent.tokens + reservedTokens }
+    noteEstimate(round, execution.role, options.inputTokens)
     return { duplicate: false, request }
   })
 }
@@ -144,15 +235,16 @@ export function installUsage(ctx, controller) {
   }))
   disposers.push(ctx.on('llm/stream', async function* (options, next) {
     const sessionId = attributedSession(ctx, options)
-    if (!sessionId) { await unknownAttribution(controller); yield* next(); return }
+    if (!sessionId) { await unknownAttribution(controller); fail('ATTRIBUTION_REQUIRED', 'Cannot admit an unattributed model attempt.') }
+    const exec = resolveExec(ctx, { sessionId })
+    if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
     const admission = await controller.forSession(sessionId), requestId = newId('Q')
-    let planningStore = null
     if (!admission) {
-      const exec = resolveExec(ctx, { agent: { id: sessionId } })
-      if (exec.role === 'plan' && exec.isRoot) {
-        planningStore = forCwd(exec.cwd)
-        await startPlanningRequest(planningStore, sessionId, requestId, options, controller.now())
-      } else { yield* next(); return }
+      const store = controller.storeForCwd(exec.cwd)
+      // Match request/tool scope; authorityRoot alone does not enroll an ordinary session.
+      const protectedScope = await store.read(state => Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt)))
+      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', 'Unbound role/standard cannot bypass a protected round. Pre-round model bootstrap requires trusted external admission.')
+      yield* next(); return
     } else {
       try {
         await reserveRequest(admission.store, admission.identity, requestId, { provider: options.provider, model: options.model,
@@ -162,23 +254,22 @@ export function installUsage(ctx, controller) {
         throw error
       }
     }
-    let usage = null, outcome = 'interrupted'
+    let usage = null, outcome = 'interrupted', terminalFailure = false
     try {
       for await (const chunk of next()) {
-        if (chunk.type === 'usage' || chunk.usage) usage = normalizeUsage(chunk.usage) ?? usage
+        if (chunk && chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') terminalFailure = true
+        if (chunk && chunk.type === 'error') terminalFailure = true
+        if (chunk.type === 'usage' || chunk.usage) usage = normalizeUsage(chunk.usage)
         yield chunk
       }
-      outcome = 'completed'
+      outcome = terminalFailure ? 'failed' : 'completed'
+    } catch (error) {
+      outcome = 'failed'
+      throw error
     } finally {
       // Latest receipt per attempt, not sum-of-usage-snapshots.
-      if (admission) {
-        await settleRequest(admission.store, admission.identity, requestId, usage, outcome, controller.now())
-        await stopIfBudgetHeld(controller, admission.store, admission.identity.roundId)
-      } else {
-        await settlePlanningRequest(planningStore, requestId, usage, outcome, controller.now())
-        const adoptedTo = await planningStore.read(state => state.planningUsage[requestId].adoptedTo)
-        if (adoptedTo) await stopIfBudgetHeld(controller, planningStore, adoptedTo.roundId)
-      }
+      await settleRequest(admission.store, admission.identity, requestId, usage, outcome, controller.now())
+      await stopIfBudgetHeld(controller, admission.store, admission.identity.roundId)
     }
   }))
   return () => { for (const dispose of disposers) if (typeof dispose === 'function') dispose() }

@@ -56,7 +56,10 @@ public static class RoleChainJob {
   static string Now() { return DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture); }
   static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
   static void Write(string path, Dictionary<string, object> value) {
-    string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+    // Windows PowerShell 5.1 (.NET Framework) enforces MAX_PATH unless long paths
+    // are enabled machine-wide; a 32-hex temp suffix pushed receipt paths past 260
+    // characters and made Write throw DirectoryNotFoundException after the child ran.
+    string temp = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
     byte[] bytes = new UTF8Encoding(false).GetBytes(Json.Serialize(value));
     using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
     if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);

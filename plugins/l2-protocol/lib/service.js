@@ -1,9 +1,11 @@
 // Round facts and admission rules. Runtime evidence never expands a role's claim.
 import { randomUUID } from 'node:crypto'
+import { readJobReceipt } from './receipt-proof.js'
 import { ChainError, fail } from './errors.js'
+import { assertProjectAdmission } from './authorization.js'
 import { serviceOf } from './host.js'
-import { aggregate, assertAdmissible, assertMember, briefStatus, budgetOf, freezeDeadline,
-  initRuntime, iso, roundOf, usageTotals } from './runtime.js'
+import { aggregate, assertAdmissible, assertMember, briefStatus, budgetOf, closeoutReserveOf, DEFAULT_CLOSEOUT_REQUESTS,
+  DEFAULT_CLOSEOUT_TIME_MS, freezeDeadline, initRuntime, iso, roundOf, usageTotals } from './runtime.js'
 export { ChainError, budgetOf }
 export const LIMITS = { testFailures: 3, fixes: 2, reruns: 2, restarts: 3 }
 export const DEFAULT_BUDGET = { tokens: 0, fixes: 2, reruns: 2, restarts: 3, wallMinutes: 90, outputCap: 2048 }
@@ -16,11 +18,86 @@ function member(state, round, exec, allowStopped = false) { return assertMember(
 function validatePayload(layer, payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('BAD_ARGS', 'Evidence needs an object payload.')
   if (layer === 'command' && (!String(payload.command ?? '').trim() || !Number.isInteger(payload.exitCode)))
-    fail('BAD_ARGS', 'Command evidence requires the actual command and integer exitCode.')
+    fail('BAD_ARGS', 'Command evidence requires the actual command and integer exitCode, or a settled jobId to derive them.')
   if (layer === 'artifact' && !String(payload.path ?? '').trim()) fail('BAD_ARGS', 'Artifact evidence requires a path.')
   if (layer === 'self-report' && !String(payload.text ?? '').trim()) fail('BAD_ARGS', 'Self-report requires text.')
   if (layer === 'review' && (!['pass', 'fail', 'partial'].includes(payload.verdict) || !Array.isArray(payload.scope) ||
       !Array.isArray(payload.uncovered) || !payload.uncovered.length)) fail('BAD_ARGS', 'Review requires verdict, scope and non-empty uncovered.')
+}
+// Command evidence may bind a compute job that already settled. Every recorded fact
+// (command, exit code, outcome, receipt) is derived from the ledger job record and its
+// native proof; a caller-supplied value is only accepted when it agrees with that record.
+// Unknown, cross-round, unsettled or unproven jobs are refused instead of guessed.
+function normalizeFact(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'number') return value
+  return String(value).trim().replace(/\s+/g, ' ')
+}
+function resolveComputeJob(state, round, key) {
+  const direct = round.executions?.[key]
+  if (direct?.kind === 'job') return direct
+  const byHostJobId = Object.values(round.executions ?? {}).find(e => e.kind === 'job' && e.jobId === key)
+  if (byHostJobId) return byHostJobId
+  const elsewhere = Object.values(state?.rounds ?? {}).some(other => other.id !== round.id &&
+    (other.executions?.[key]?.kind === 'job' ||
+      Object.values(other.executions ?? {}).some(e => e.kind === 'job' && e.jobId === key)))
+  if (elsewhere) fail('JOB_WRONG_ROUND', `Job ${key} belongs to another round; command evidence must cite this round's own execution.`)
+  return null
+}
+function commandEvidencePayload(state, round, payload, store) {
+  const key = String(payload.jobId ?? '').trim()
+  // A caller-typed command/exitCode has no native receipt behind it. Letting it through would
+  // let a self-report satisfy the close-round "command evidence" gate, so binding is required.
+  if (!key) fail('COMMAND_BINDING_REQUIRED', 'Command evidence must bind the settled compute job that produced it: pass jobId (the executionId or the jobId returned by chain_compute). A caller-typed command has no receipt and cannot stand in for one.')
+  const job = resolveComputeJob(state, round, key)
+  if (!job) fail('BAD_ARGS', 'jobId must name a compute job in this round (use the executionId or the jobId returned by chain_compute).')
+  const label = job.id
+  if (job.state !== 'completed') fail('JOB_NOT_SETTLED', `Compute job ${label} is ${job.state}; command evidence needs a settled exit.`)
+  if (job.jobsQuiescent !== true) fail('JOB_NOT_SETTLED', `Compute job ${label} has no quiescent native proof yet.`)
+  if (!Number.isInteger(job.exitCode)) fail('JOB_EXIT_UNKNOWN', `Compute job ${label} has no integer exit code; refusing to invent one.`)
+  // Only a Job-empty receipt proves the supervisor observed an empty job; any other ref
+  // (e.g. admission-rejected-before-start) proves nothing about a real exit. The receipt must be
+  // the file this job was launched with (trusted location), a regular file rather than a link or
+  // directory, and its recorded identity/exit must still agree with the ledger record. A decoy
+  // file elsewhere, a tampered file or a bare prefix is refused instead of trusted.
+  const expected = { requireLaunched: true, storeDir: store.dir, roundId: round.id, executionId: label, nonce: job.nonce,
+    generation: job.generation, exitCode: job.exitCode,
+    deadlineAt: round.time?.deadlineAt ?? null, signalDueAt: round.time?.signalDueAt ?? null }
+  const refs = Array.isArray(job.evidenceRefs) ? job.evidenceRefs : []
+  let proof = null
+  let firstError = null
+  for (const ref of refs) {
+    const attempt = readJobReceipt(ref, expected)
+    if (attempt.ok) { proof = attempt; break }
+    firstError ??= attempt
+  }
+  if (!proof) fail(firstError?.code ?? 'JOB_PROOF_MISSING',
+    `Compute job ${label} has no verifiable native Job-empty receipt (${firstError?.reason ?? 'no receipt reference'}); refusing to record unproven evidence.`)
+  // `requested` is the caller's argv, `argv` is what confinement actually scheduled.
+  // Record both strings so intent and execution fact stay distinguishable instead of
+  // one silently standing in for the other.
+  // "completed" is a record-settling label; whether a process actually ran is a separate fact.
+  const launched = typeof job.launched === 'boolean' ? job.launched : null
+  const requested = Array.isArray(job.spec?.requested) && job.spec.requested.length ? job.spec.requested.join(' ') : ''
+  const executed = Array.isArray(job.spec?.argv) && job.spec.argv.length ? job.spec.argv.join(' ') : ''
+  const argv = requested || executed
+  if (!argv) fail('BAD_ARGS', 'The job record carries no argv; a caller-typed command is not the executed fact.')
+  const derived = { command: argv, exitCode: job.exitCode, outcome: job.outcome ?? null }
+  for (const field of ['command', 'exitCode', 'outcome']) {
+    if (payload[field] === undefined) continue
+    if (normalizeFact(payload[field]) !== normalizeFact(derived[field]))
+      fail('EVIDENCE_MISMATCH', `payload.${field} disagrees with job ${label}: recorded ${JSON.stringify(derived[field])}. Omit ${field} to let the record supply it.`)
+  }
+  return { command: derived.command, exitCode: derived.exitCode, jobId: label, hostJobId: job.jobId ?? null,
+    outcome: derived.outcome, launched, evidenceRef: proof.ref, receiptDigest: proof.digest,
+    receiptCheckedAt: proof.checkedAt, receiptExitAt: proof.exitAt,
+    // Raw argv arrays are the verifiable execution fact; the joined strings are display only.
+    argv: Array.isArray(job.spec?.requested) ? [...job.spec.requested] : null,
+    executedArgv: Array.isArray(job.spec?.argv) ? [...job.spec.argv] : null,
+    executedCommand: executed || null,
+    // Provenance: which execution owned the job and which execution recorded the evidence are
+    // both kept, so a same-round citation from another session stays visible in the audit.
+    ownerSessionId: job.ownerSessionId ?? null, parentExecutionId: job.parentExecutionId ?? null }
 }
 // Fixed local Git queries only. Disable command-capable callbacks, optional
 // index writes and paging; never evaluate repository filter command strings.
@@ -74,9 +151,25 @@ export async function openRound(store, exec, args = {}) {
   if (!goal) fail('BAD_ARGS', 'A round needs an acceptance objective.')
   if (exec.role !== 'plan' || !exec.isRoot || !exec.sessionId) fail('ROLE_DENIED', 'Only the actual root plan may open a round.')
   const budget = budgetOf({ budget: args.budget ?? {} })
+  if (store.requiresAuthorization && args.budget?.closeoutRequests !== undefined &&
+    args.budget.closeoutRequests < DEFAULT_CLOSEOUT_REQUESTS)
+    fail('BAD_BUDGET', `An authorized project cannot lower the closeout request reserve below ${DEFAULT_CLOSEOUT_REQUESTS}.`)
+  if (store.requiresAuthorization && args.budget?.closeoutTimeMs !== undefined &&
+    args.budget.closeoutTimeMs < DEFAULT_CLOSEOUT_TIME_MS)
+    fail('BAD_BUDGET', `An authorized project cannot lower the closeout time reserve below ${DEFAULT_CLOSEOUT_TIME_MS} ms.`)
   return store.mutate(state => {
     if (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt) fail('ROUND_ALREADY_OPEN', 'Close the existing round; do not reset its deadline or usage.')
-    const id = shortId('R'), round = { id, goal, scope: String(args.scope ?? goal), openedAt: iso(),
+    let authorization = null
+    if (store.requiresAuthorization) {
+      const grant = assertProjectAdmission(state)
+      for (const key of ['requests', 'tokens', 'outputCap', 'wallMinutes', 'testFailures', 'fixes', 'reruns', 'restarts']) {
+        if (args.budget?.[key] !== undefined && (budget[key] > grant.budget[key] || (key === 'tokens' && budget[key] === 0)))
+          fail('AUTHORIZATION_EXCEEDED', `Round ${key} exceeds the immutable project grant.`)
+        budget[key] = args.budget?.[key] === undefined ? grant.budget[key] : budget[key]
+      }
+      authorization = { id: grant.id, authorizedAt: grant.authorizedAt, deadlineAt: grant.deadlineAt }
+    }
+    const id = shortId('R'), round = { id, goal, authorization, scope: String(args.scope ?? goal), openedAt: iso(),
       openedBy: { sessionId: exec.sessionId, agentPreset: exec.preset }, budget,
       counters: { fixes: 0, reruns: 0, restarts: 0 }, failures: {}, evidence: [], gates: [], baseline: null, closeout: null, closedAt: null }
     initRuntime(state, round, exec)
@@ -131,7 +224,13 @@ export async function recordFailure(store, exec, args = {}) {
       const row = round.failures[signature] ?? { signature, count: 0, firstAt: iso() }
       row.count++; row.lastAt = iso(); row.lastDetail = String(args.detail ?? '').slice(0, 500)
       round.failures[signature] = row; signatureCount = row.count
-    } else round.counters[key]++
+    } else {
+      if (store.requiresAuthorization) {
+        const used = Object.values(state.rounds).reduce((sum, row) => sum + (row.counters?.[key] ?? 0), 0)
+        if (used >= state.authorization.budget[key]) fail('PROJECT_OPERATION_BUDGET_REACHED', `Cumulative ${key} allowance is exhausted.`)
+      }
+      round.counters[key]++
+    }
     const exceeded = exceededList(round).length ? (signatureCount >= budgetOf(round).testFailures ? 'test' : kind) : null
     if (exceeded) round.control.limitHold = true
     return { roundId: round.id, kind, signature, signatureCount, exceeded, counters: round.counters, limits: budgetOf(round) }
@@ -141,13 +240,15 @@ export async function recordEvidence(store, exec, args = {}) {
   const layer = String(args.layer ?? '')
   if (!LAYER_ROLES[layer]) fail('BAD_ARGS', 'Unknown evidence layer.')
   if (!LAYER_ROLES[layer].includes(exec.role)) fail('EVIDENCE_LAYER_MISMATCH', `Only ${LAYER_ROLES[layer].join('/')} can record ${layer}.`)
-  validatePayload(layer, args.payload)
+  if (!args.payload || typeof args.payload !== 'object' || Array.isArray(args.payload)) fail('BAD_ARGS', 'Evidence needs an object payload.')
   return store.mutate(state => {
     const round = roundOf(state, args.roundId); assertOpen(round); const author = member(state, round, exec, true)
     if (!round.baseline) fail('NO_BASELINE', 'Evidence needs the original T0.')
+    const payload = layer === 'command' ? commandEvidencePayload(state, round, args.payload, store) : args.payload
+    validatePayload(layer, payload)
     const evidence = { id: `${round.id}#e${round.evidence.length + 1}`, roundId: round.id, t0Id: round.baseline.t0Id,
       layer, authorRole: exec.role, authorSession: exec.sessionId, executionId: author.id, generation: author.generation,
-      at: iso(), payload: args.payload }
+      at: iso(), payload }
     round.evidence.push(evidence)
     return { roundId: round.id, evidence, evidenceCount: round.evidence.length,
       byLayer: round.evidence.reduce((out, e) => ({ ...out, [e.layer]: (out[e.layer] ?? 0) + 1 }), {}) }
@@ -232,26 +333,79 @@ export async function closeRound(store, exec, args = {}) {
     const round = roundOf(state, args.roundId); assertOpen(round); const caller = member(state, round, exec, true)
     if (!caller.root || exec.role !== 'plan') fail('ROLE_DENIED', 'Only the owning root plan closes the round.')
     const problems = [], exceeded = exceededList(round)
-    if (!round.baseline) problems.push('No original T0.')
-    if (exceeded.length && !round.gates.some(g => forceCovers(round, g))) problems.push('Failure limits exceeded without a force decision covering the current counts.')
-    if (!round.evidence.some(e => e.layer === 'command')) problems.push('Missing command evidence.')
-    if (!round.evidence.some(e => e.layer === 'review')) problems.push('Missing independent review evidence.')
-    const others = Object.values(round.executions ?? {}).filter(e => e.id !== caller.id)
+    const allExecutions = Object.values(round.executions ?? {})
+    const others = allExecutions.filter(e => e.id !== caller.id)
+    // A round opened by the /chain-authorize bootstrap may legitimately end before any
+    // protected step ran (no T0, no evidence, no other executions). Closing it is pure
+    // bookkeeping: it must not require T0/command/review evidence it never had, and it must
+    // not silently relax those requirements for a round that actually executed anything.
+    const emptyPlanning = others.length === 0 && !round.baseline && round.evidence.length === 0
+    if (!emptyPlanning) {
+      if (!round.baseline) problems.push('No original T0.')
+      if (exceeded.length && !round.gates.some(g => forceCovers(round, g))) problems.push('Failure limits exceeded without a force decision covering the current counts.')
+      if (!round.evidence.some(e => e.layer === 'command')) problems.push('Missing command evidence.')
+      if (!round.evidence.some(e => e.layer === 'review')) problems.push('Missing independent review evidence.')
+    }
+    if (!emptyPlanning) {
+      // Recording a command re-reads the native receipt once. Closing is the second moment the
+      // record can be trusted, so every command row's receipt is verified again and compared with
+      // the digest captured at recording time: a receipt edited in between (same user, writable
+      // store directory) must not silently back a closeout.
+      const broken = []
+      for (const row of round.evidence.filter(e => e.layer === 'command')) {
+        const jobId = String(row.payload?.jobId ?? '')
+        const recordedDigest = row.payload?.receiptDigest
+        // A row that cannot name its job or its recorded digest cannot be re-verified. Skipping it
+        // would let such a row satisfy the "command evidence" gate without any receipt behind it.
+        if (!jobId || !recordedDigest) {
+          broken.push('a command row does not record both the bound jobId and the receipt digest, so it cannot be re-verified')
+          continue
+        }
+        const job = round.executions?.[jobId]
+        if (!job) { broken.push(jobId + ': the bound job record is gone'); continue }
+        const expected = { requireLaunched: true, storeDir: store.dir, roundId: round.id, executionId: job.id,
+          nonce: job.nonce, generation: job.generation, exitCode: job.exitCode,
+          deadlineAt: round.time?.deadlineAt ?? null, signalDueAt: round.time?.signalDueAt ?? null }
+        let verified = null
+        for (const ref of Array.isArray(job.evidenceRefs) ? job.evidenceRefs : []) {
+          const attempt = readJobReceipt(ref, expected)
+          if (attempt.ok) { verified = attempt; break }
+        }
+        if (!verified) { broken.push(jobId + ': its receipt no longer verifies'); continue }
+        if (verified.digest !== recordedDigest) broken.push(jobId + ': its receipt changed after the command evidence was recorded')
+      }
+      if (broken.length) problems.push('Command evidence receipts changed after recording: ' + broken.join('; '))
+    }
     if (others.some(e => e.agentQuiescent !== true || e.jobsQuiescent !== true) || round.control.inventoryUnknown)
       problems.push('Agent/job exits remain unconfirmed; servicesStopped is not process proof.')
-    if (!String(closeout.version?.commit ?? '').trim()) problems.push('version.commit is required (or "(no-git)").')
+    const commit = String(closeout.version?.commit ?? '').trim()
+    if (!commit) problems.push('version.commit is required (or "(no-git)").')
+    else if (!/^(\(no-git\)|[0-9a-f]{7,64})$/i.test(commit)) problems.push('version.commit must be a 7+ hex commit or the literal "(no-git)".')
     if (!['delivered', 'partial', 'blocked'].includes(closeout.result)) problems.push('Invalid result.')
     if (!Array.isArray(closeout.uncovered) || !closeout.uncovered.length) problems.push('Non-empty uncovered is required.')
+    else if (closeout.uncovered.some(u => !String(u).trim())) problems.push('uncovered entries must not be blank.')
+    // A delivered result is a claim that the work passed. Recording a review verdict of
+    // "fail" and then closing as delivered contradicts the record, so it is refused here
+    // rather than left to the reader. partial/blocked may carry a failing verdict.
+    if (!emptyPlanning && closeout.result === 'delivered' &&
+      round.evidence.filter(e => e.layer === 'review').some(e => String(e.payload?.verdict ?? '') !== 'pass'))
+      problems.push('A delivered round requires every independent review verdict to be "pass"; report partial or blocked instead.')
     if (closeout.servicesStopped !== true) problems.push('servicesStopped must be true in addition to actual exit proof.')
+    // A round closed before any protected step ran has no evidence at all; it must not be
+    // able to report delivered on an empty record.
+    if (emptyPlanning && closeout.result === 'delivered') problems.push('An empty planning round cannot claim delivered; report partial or blocked.')
     if (problems.length) fail('CLOSEOUT_REJECTED', `Cannot close:\n- ${problems.join('\n- ')}`, { problems, exceeded })
     const usage = usageTotals(round)
     const final = { version: closeout.version, result: closeout.result, uncovered: closeout.uncovered.map(String),
-      servicesStopped: true, usage, cost: usage.cost }
+      servicesStopped: closeout.servicesStopped === true,
+      servicesStoppedMeans: 'declaration by the closing agent; the machine gate proves only that controlled executions and managed jobs are quiescent, not that any Host process exited',
+      usage, cost: usage.cost }
+    if (emptyPlanning) final.abortedEmpty = true
     round.closeout = final; round.closedAt = iso(); round.control.resumeBlocked = true
     if (state.activeRoundId === round.id) state.activeRoundId = null
     const auditPath = await store.exportRound(round)
     return { ok: true, roundId: round.id, auditPath, closeout: final,
-      summary: `版本：${final.version.commit}\n结果：${final.result}\n未覆盖项：${final.uncovered.join('；')}\n费用：${usage.totalTokens} known tokens; ${usage.pendingRequests} pending requests; billed cost unknown.` }
+      summary: `版本：${final.version.commit}\n结果：${final.result}\n未覆盖项：${final.uncovered.join('；')}\n费用：${usage.totalTokens} known tokens; ${usage.pendingRequests} pending requests; billed cost unknown.${emptyPlanning ? '\n本轮在受保护步骤执行前关闭（abortedEmpty）：无 T0、无命令/复审证据，额度未被重置。' : ''}` }
   })
 }
 export async function status(store, args = {}) {

@@ -25,9 +25,11 @@ async function stream(h, options, chunks = [], failure = null) {
 }
 const usage = (inputTokens, outputTokens, extra = {}) => ({ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, ...extra })
 
-test('usage normalization counts total once, cache/reasoning are subsets, malformed receipts stay unknown', () => {
-  assert.deepEqual(normalizeUsage(usage(100, 20, { cacheReadTokens: 60, cacheWriteTokens: 5, reasoningTokens: 10 })),
-    { inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadTokens: 60, cacheWriteTokens: 5, reasoningTokens: 10 })
+test('Host disjoint cache buckets count once; reasoning stays inside output; contradictions remain unknown', () => {
+  assert.deepEqual(normalizeUsage(usage(100, 20, { totalTokens: 185, cacheReadTokens: 60, cacheWriteTokens: 5, reasoningTokens: 10 })),
+    { inputTokens: 100, outputTokens: 20, totalTokens: 185, cacheReadTokens: 60, cacheWriteTokens: 5, reasoningTokens: 10 })
+  assert.equal(normalizeUsage(usage(100, 20, { cacheReadTokens: 60 })), null)
+  assert.equal(normalizeUsage(usage(100, 20, { reasoningTokens: 21 })), null)
   assert.equal(normalizeUsage({ inputTokens: 10, outputTokens: 2, totalTokens: 9 }), null)
   assert.equal(normalizeUsage({ inputTokens: -1, outputTokens: 2 }), null)
   assert.equal(normalizeUsage(null), null)
@@ -77,35 +79,28 @@ test('reservation precedes provider I/O, rejects overcommit, and deduplicates st
   assert.equal(total.totalTokens, 450); assert.equal(total.pendingReserved, 1500)
 })
 
-test('first planning stream is journalled before I/O, adopted once, and late usage remains in its original round', async t => {
+test('pre-round model bootstrap is denied; legacy journal adoption is explicit and never renewed', async t => {
   const h = await fixture(t, { noOpen: true })
+  let called = false
   const middleware = h.hooks.get('llm/stream')[0]
-  const iterator = middleware(opts(h.plan.sessionId), async function* () {
-    assert.equal(Object.keys(h.store.snapshot().planningUsage).length, 1)
-    yield { type: 'text', text: 'planning' }
-    yield { type: 'usage', usage: usage(80, 10) }
-  })
-  await iterator.next()
-  const first = await svc.openRound(h.store, h.plan, { goal: 'adopt first planning request' })
-  const requestId = await h.store.read(s => Object.keys(s.planningUsage)[0])
-  assert.equal(await h.store.read(s => Object.keys(s.rounds[first.roundId].usage.requests).length), 1)
-  await h.store.mutate(s => { s.rounds[first.roundId].closedAt = new Date().toISOString(); s.activeRoundId = null })
-  const other = await svc.openRound(h.store, h.plan, { goal: 'direct trusted fixture creates a different binding' })
-  await iterator.next(); await iterator.next()
-  const state = await h.store.read(s => s)
-  assert.equal(state.rounds[first.roundId].usage.requests[requestId].usage.totalTokens, 90)
-  assert.equal(Object.keys(state.rounds[other.roundId].usage.requests).length, 0)
-  assert.equal(state.planningUsage[requestId].adoptedTo.roundId, first.roundId)
-  assert.equal(state.rounds[first.roundId].usage.requests[requestId].priorToRoundAuthorization, true)
-  await settlePlanningRequest(h.store, requestId, usage(80, 10), 'completed')
+  await assert.rejects(async () => { for await (const _ of middleware(opts(h.plan.sessionId), async function* () { called = true })) {} }, code('MANAGED_ROUND_REQUIRED'))
+  assert.equal(called, false)
+  // Historical migration helper is exercised directly, not treated as model authorization.
+  await startPlanningRequest(h.store, h.plan.sessionId, 'Q-legacy', opts(h.plan.sessionId))
+  const first = await svc.openRound(h.store, h.plan, { goal: 'adopt preexisting historical journal' })
+  await settlePlanningRequest(h.store, 'Q-legacy', usage(80, 10), 'completed')
   assert.equal(usageTotals(await h.store.read(s => s.rounds[first.roundId])).totalTokens, 90)
+  await h.store.mutate(s => { s.rounds[first.roundId].closedAt = new Date().toISOString(); s.activeRoundId = null })
+  const other = await svc.openRound(h.store, h.plan, { goal: 'separate explicit test objective' })
+  assert.equal(Object.keys(await h.store.read(s => s.rounds[other.roundId].usage.requests)).length, 0)
+  assert.equal((await h.store.read(s => s.planningUsage['Q-legacy'])).adoptedTo.roundId, first.roundId)
 })
 
 test('missing planning cap/usage remains pending and blocks a declared budget rather than charging zero', async t => {
   const h = await fixture(t, { noOpen: true })
   await startPlanningRequest(h.store, h.plan.sessionId, 'Q-uncapped-plan', { provider: 'fake', model: 'stand-in', messages: [] })
   await settlePlanningRequest(h.store, 'Q-uncapped-plan', null, 'interrupted')
-  const opened = await svc.openRound(h.store, h.plan, { goal: 'uncertainty is explicit', budget: { tokens: 10000 } })
+  const opened = await svc.openRound(h.store, h.plan, { goal: 'uncertainty is explicit', budget: { tokens: 10000, closeoutRequests: 0 } })
   const who = await identity(h)
   await assert.rejects(reserveRequest(h.store, who, 'Q-not-free', reserve), code('TOKEN_BUDGET_REACHED'))
   const { work } = await h.spawnWork()
@@ -142,10 +137,12 @@ test('output caps preserve waterfall config; explicit attribution wins, local in
   assert.equal(rows[0].sessionId, h.plan.sessionId); assert.equal(rows[1].sessionId, work.sessionId)
 })
 
-test('unattributable stream marks uncertainty and revokes controlled work without cancelling an unrelated stream', async t => {
+test('unattributable stream marks uncertainty, revokes controlled work and never invokes downstream', async t => {
   const h = await fixture(t), { work } = await h.spawnWork()
-  const output = await stream(h, { ...opts(undefined) }, [{ type: 'text', text: 'unrelated provider stream still flows' }])
-  assert.equal(output.length, 1)
+  let called = false
+  const middleware = h.hooks.get('llm/stream')[0]
+  await assert.rejects(async () => { for await (const _ of middleware(opts(undefined), async function* () { called = true })) {} }, code('ATTRIBUTION_REQUIRED'))
+  assert.equal(called, false)
   const round = await h.store.read(s => s.rounds[h.opened.roundId])
   assert.equal(round.usage.attributionUnknown, true); assert.equal(round.usage.unattributedAttempts, 1)
   assert.equal(round.control.resumeBlocked, true)
@@ -174,4 +171,19 @@ test('post-response overrun is recorded and revokes further work; it is not an a
   const middleware = h.hooks.get('llm/stream')[0]
   await assert.rejects(async () => { for await (const _ of middleware(options, async function* () { called = true })) {} }, code('RESUME_BLOCKED'))
   assert.equal(called, false)
+})
+
+test('terminal provider failure charges its reservation upper bound and does not poison later admission', async t => {
+  const h = await fixture(t), options = opts(h.plan.sessionId)
+  const reserved = inputReservation(options) + options.maxTokens
+  const failure = { type: 'finish', reason: { kind: 'error', failure: { message: 'Service is too busy.', code: 'SERVER', status: 503 } } }
+  await stream(h, options, [failure])
+  const rows = await h.store.read(s => Object.values(s.rounds[h.opened.roundId].usage.requests))
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'failed')
+  assert.equal(rows[0].chargeTokens, reserved); assert.equal(rows[0].usage, null)
+  const total = await h.store.read(s => usageTotals(s.rounds[h.opened.roundId]))
+  assert.equal(total.totalTokens, reserved); assert.equal(total.pendingRequests, 0); assert.equal(total.failedRequests, 1)
+  await stream(h, options, [{ type: 'usage', usage: usage(10, 2) }])
+  const after = await h.store.read(s => usageTotals(s.rounds[h.opened.roundId]))
+  assert.equal(after.requests, 2); assert.equal(after.totalTokens, reserved + 12); assert.equal(after.pendingRequests, 0)
 })
