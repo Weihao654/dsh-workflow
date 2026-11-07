@@ -21,7 +21,10 @@ export function registerTools(ctx, options = {}) {
       async execute(args, raw) {
         const exec = resolveExec(ctx, raw)
         if (!exec.role || !spec.roles.includes(exec.role)) throw new Error(`ROLE_DENIED: ${spec.name} requires ${spec.roles.join('/')}; actual preset=${exec.preset ?? 'unknown'}.`)
-        const store = controller ? controller.storeForCwd(exec.cwd) : forCwd(exec.cwd)
+        const store = controller ? controller.storeForExec(exec) : forCwd(exec.cwd)
+        controller?.assertSessionLocation(store, exec)
+        if (spec.name !== 'chain_role_models' && controller?.isWorkflowSession(exec, store))
+          return { ok: false, code: 'NATIVE_WORKFLOW', message: '当前 plan 直接使用原生工具：plan 调用 dispatch_work，work 调用 dispatch_code / dispatch_review，同任务使用 send_message 继续现有子会话。无需开启受控轮次或填写预算。' }
         exec.reuse = loadRoutes(exec.cwd).reuse
         exec.controller = controller
         if (controller) await controller.attach(store, exec)

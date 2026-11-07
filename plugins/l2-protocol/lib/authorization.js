@@ -1,6 +1,25 @@
 // Host-only project envelope. This module exports no tool or HTTP mutation path.
 import { fail } from './errors.js'
-import { budgetOf, usageTotals } from './runtime.js'
+import { budgetOf, usageTotals, DEFAULT_CLOSEOUT_REQUESTS, DEFAULT_CLOSEOUT_TIME_MS } from './runtime.js'
+
+const INPUT_GUIDANCE = 'Enter only one /chain-authorize command and one JSON object; do not append code fences, explanations or another command.'
+
+function validateAuthorizationArgs(args) {
+  if (args === null || typeof args !== 'object' || Array.isArray(args))
+    fail('BAD_ARGS', `Authorization input must be a JSON object. ${INPUT_GUIDANCE}`)
+  if (args.budget !== undefined && (args.budget === null || typeof args.budget !== 'object' || Array.isArray(args.budget)))
+    fail('BAD_ARGS', `budget must be a JSON object when supplied. ${INPUT_GUIDANCE}`)
+  return args
+}
+
+export function parseAuthorizationInput(rawInput) {
+  if (typeof rawInput !== 'string') fail('BAD_ARGS', INPUT_GUIDANCE)
+  const text = rawInput.trim().replace(/^\/chain-authorize(?:\s+|$)/u, '').trim()
+  let args
+  try { args = JSON.parse(text) }
+  catch { fail('BAD_ARGS', `Invalid authorization JSON. ${INPUT_GUIDANCE}`) }
+  return validateAuthorizationArgs(args)
+}
 
 export function projectUsage(state) {
   const values = Object.values(state.rounds).map(round => ({ ...usageTotals(round),
@@ -35,14 +54,23 @@ export function assertProjectAdmission(state, now = Date.now(), reservation = nu
 // Called only from the Host Commands handler. The handler is NOT a model tool.
 export async function authorizeProject(store, exec, args, commandId, now = Date.now()) {
   if (!exec.bindingValid || exec.role !== 'plan' || !exec.isRoot || !commandId)
-    fail('ROLE_DENIED', 'A genuine human command targeting the live root plan is required.')
+    fail('ROLE_DENIED', `A genuine human command targeting the live root plan is required; actual preset=${String(exec.preset ?? 'unknown')}, role=${String(exec.role ?? 'none')}, root=${Boolean(exec.isRoot)}, bindingValid=${Boolean(exec.bindingValid)}, commandIdPresent=${Boolean(commandId)}. Select the actual root plan session with matching live preset and projection, then submit the Host command there.`)
   if (!store.requiresAuthorization) fail('AUTHORITY_LOCATION_REQUIRED', 'Production authorization requires a protected profile ledger.')
+  validateAuthorizationArgs(args)
   const id = String(args.authorizationId ?? '').trim()
   if (!id || !String(args.goal ?? '').trim()) fail('BAD_ARGS', 'authorizationId and goal are required.')
   const budget = budgetOf({ budget: args.budget ?? {} })
   if (!Number.isSafeInteger(budget.tokens) || budget.tokens < 1) fail('BAD_BUDGET', 'A positive total token limit is mandatory.')
+  // Match openRound before persisting an immutable grant, so a rejected reserve
+  // cannot leave a project authorized with a budget that can never open a round.
+  if (budget.closeoutRequests < DEFAULT_CLOSEOUT_REQUESTS)
+    fail('BAD_BUDGET', `An authorized project cannot lower the closeout request reserve below ${DEFAULT_CLOSEOUT_REQUESTS}.`)
+  if (budget.closeoutTimeMs < DEFAULT_CLOSEOUT_TIME_MS)
+    fail('BAD_BUDGET', `An authorized project cannot lower the closeout time reserve below ${DEFAULT_CLOSEOUT_TIME_MS} ms.`)
   return store.mutate(state => {
     if (state.authorization) {
+      if (state.authorization.sessionId !== exec.sessionId)
+        fail('AUTHORIZATION_OWNER_MISMATCH', 'Existing project authorization belongs to another root plan session; return to that original session without replacing its grant.')
       if (state.authorization.id !== id || JSON.stringify(state.authorization.budget) !== JSON.stringify(budget) || state.authorization.goal !== args.goal)
         fail('AUTHORIZATION_IMMUTABLE', 'Existing project authorization cannot be reset, replaced or extended.')
       return { duplicate: true, authorization: state.authorization }

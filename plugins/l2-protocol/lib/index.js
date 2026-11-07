@@ -1,7 +1,7 @@
 import { registerTools } from './tools.js'
 import { installRouting } from './role-models.js'
 import { installUsage } from './usage.js'
-import { registerApi } from './api.js'
+import { registerApi, registerPlanStartApi } from './api.js'
 import { ChainController } from './controller.js'
 import { resolveProfileDir } from './profile-dir.js'
 import { existsSync, readFileSync } from 'node:fs'
@@ -20,8 +20,9 @@ export function apply(ctx) {
     exists: existsSync,
     readJson,
   })
-  const controller = new ChainController(ctx, { authorityRoot: join(profileDir, 'role-chain-authority') })
+  const controller = new ChainController(ctx, { authorityRoot: join(profileDir, 'role-chain-authority'), workflowByDefault: true })
   say(ctx, `authority root ${join(profileDir, 'role-chain-authority')} (profile dir from ${source})`)
+  say(ctx, 'Default plan uses native collaboration without enrollment or plugin budget gates; existing controlled grants retain their original limits.')
   const routing = installRouting(ctx)
   const usageDispose = installUsage(ctx, controller)
   const toolsDispose = registerTools(ctx, { tracker: routing.tracker, controller })
@@ -35,7 +36,9 @@ export function apply(ctx) {
   if (typeof ctx.inject !== 'function') return
   ctx.inject(['webServer'], child => {
     const api = registerApi(child, { tracker: routing.tracker })
-    if (typeof child.effect === 'function') child.effect(() => () => api.dispose())
+    const planStart = registerPlanStartApi(child, controller)
+    if (typeof child.effect === 'function') child.effect(() => () => { planStart.dispose(); api.dispose() })
     say(child, api.registered ? `Settings API ${api.path}` : 'Settings API unavailable')
+    say(child, planStart.registered ? `Plan startup status API ${planStart.path}` : 'Plan startup status API unavailable')
   })
 }

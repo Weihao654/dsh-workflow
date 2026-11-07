@@ -1,16 +1,34 @@
-# L2 设计与保证边界（0.2.1-rc.20261106.39）
+# L2 设计与保证边界（0.3.0-workflow.20261107.2）
 
 本文件取代早期 0.1 原型设计。旧版“任何续聊失败就新建”“名册删除即可重建”“tokenMeter 可当累计账单”等描述不再适用。候选版源码不等于当前 Host 已加载。
 
+## 默认原生协作
+
+生产 apply 启用 `workflowByDefault`。没有持久授权或轮次成员身份的新根 plan，以及其完整 Host 委托链内的子会话，使用原生聊天和工具，不经过 L2 的预算预留、收尾门禁或受控执行器。`agent/request` 保留原请求配置，`llm/stream` 原样传递，`tools.guard` 不增加额外工具限制；角色工具矩阵和普通 Host 权限仍生效。角色预设使用 dispatch_work / dispatch_code / dispatch_review，原任务复用通过原生 send_message 完成。
+
+每次识别默认工作流前先定位持久成员并检查原目录；已有授权、轮次、停止或损坏状态不能被默认选项、切换 preset/cwd 或冷重建变成无约束会话。新委托会话即使与无关旧账本共用 cwd，也按其真实 plan 根选择空作用域，不继承别人的授权。无授权状态查询返回 `workflow`，不创建账本，不发送模型或人工命令。未知 UI 读取状态不临时禁用输入，明确旧受控停止状态继续显示原门禁。
+
+通过官方 scoped `agent.ctx` tools.restrict 过滤默认工作流的 13 个受控工具，保留原生工具与角色模型设置；在 agent/created 首次 prompt/schema 组装前安装，并监听 agent-preset/selected，覆盖已有空白会话选择 plan 的重组。请求时再次同步。显式人工授权落盘后、首次 openRound 前释放该过滤。清理仅针对确切 Agent 实例和本插件的 disposer，不解除其他限制；Host 缺少此能力时降级保留执行入口的原生工具提示，不伪造受控授权。
+
+以下状态机、计量、强制证据及完整隔离保证属于显式受控轮次；默认工作流依靠原生 Host 的执行和停止行为，不声称额外的跨角色硬预算或退出证明。
+
 ## 1. 状态与能力分开
 
-- [store.js](<lib/store.js>)：按规范化项目根共享进程内队列，读取等待写队列，原子临时文件 fsync/rename；损坏或已见文件被删除时失败关闭，不静默生成空库存。没有跨进程/跨 Host 写锁。
+- [store.js](<lib/store.js>)：生产账本按规范化项目根和根 plan 会话独立定位，队列与文件独占锁按账本区分；读取等待写队列，原子临时文件 fsync/rename。损坏或已见文件被删除时失败关闭，不静默生成空库存。已有旧版项目账本保留原路径和归属。
 - [runtime.js](<lib/runtime.js>)：round/execution/generation、会话绑定、原始期限、累计计数、停止意图与三态聚合。
 - [controller.js](<lib/controller.js>)：持有实际 activation.dispose、Agent、父 Agent、AbortController、监督器与定时器能力。持久 ID 是定位信息，不是权限。
 - [usage.js](<lib/usage.js>)：请求预留、回执、预规划日志收养、晚到回执与归属不确定性。
 - [service.js](<lib/service.js>)：Git 基线、证据、门禁、收尾。
 
 绑定身份为 `(roundId, executionId, generation, sessionId)`；作业额外绑定 nonce。晚到事件只能写原执行，不能信号新代际。旧历史退出未知时不迁移到新绑定制造“已停”。
+
+### 界面启动与普通会话
+
+输入区的启动卡只在真实 plan 的界面上下文中显示。用户确认目标和预算后，客户端调用原生 `remote.commands.execute`；Host 生成 commandId、定位真实 live Agent，并执行原有人工授权处理器。`GET /role-chain/api/plan-start` 只读状态，不接受授权写入；页面加载、轮询和普通消息均不自动建立授权，也不发送模型请求。
+
+新根 plan 使用独立任务账本，需要新的人工确认；旧任务的授权不替换、不续期。冷恢复先扫描持久会话及受托祖先归属，再选择账本，不能以新根 ID 或切换预设逃离旧绑定。新账本将项目目录和根会话同时写入 state 与初始化 marker，并核对目录 hash；归属重复、scope 缺失或不一致时拒绝。所有账本继续位于 authority 根下一层，跨项目和跨任务定位使用相同扫描。界面使用官方 `conversation.blocks` 暂停未就绪 plan 的输入，只清除自己持有的 block；缺少该 UI 能力时 Host 门禁仍执行。
+
+三个入口（agent/request、llm/stream、tools.guard）使用相同的会话范围。自身持久绑定、授权所有者以及 `origin: subagent` 的受托祖先决定是否受控，项目中存在授权本身不纳入其他聊天。跨目录检查覆盖自身与受托祖先；独立用户 fork 不继承原轮次。受托父会话缺失时先检查其已知 ID 的持久归属，尚不能确认完整链条则拒绝。这是会话及受托链的控制，不是整个目录中所有用户程序的隔离。
 
 ## 2. 派发与复用
 

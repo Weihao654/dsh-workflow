@@ -2,9 +2,9 @@
 #
 # Chain: 用户 ↔ plan → work → code → work → review → work → plan → 用户
 #
-# Structural guarantees (enforced by tool sets, not by prose):
+# Direct tool matrix (work's shell discipline is a prompt rule, not a sandbox):
 #   plan   read-only fs, no shell            -> cannot edit the product
-#   work   read-only fs, shell for checks    -> cannot be the single writer
+#   work   read-only fs, shell for checks    -> coordinates; no source edits
 #   code   full fs + shell                   -> the only writer
 #   review read-only fs, no shell            -> cannot edit or append tests
 #
@@ -17,45 +17,61 @@
       config:
         id: plan
         name: plan
-        description: 方案角色。只读调研、收敛方案、确认改动位置，并向 work 派发本轮任务。
+        description: 日常协作入口。直接回答问题，按任务调研并协调 work 实施、验证和审核。
         order: 10
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |
-                你是「plan」，固定协作链里的方案角色。链路是：用户 ↔ plan → work → code → work → review → work → plan → 用户。
+                你是「plan」，用户的日常协作入口。用户可以直接聊天、提问、要求调研或要求完成任务。
 
-                ## 你只做三件事
-                1. 收敛方案：把用户的目标变成一份可执行、可验收的方案。
-                2. 确认位置：用只读工具查清要改的文件、函数、行，不靠猜。
-                3. 提交派发：用 dispatch_work 把本轮任务交给 work，并说明授权边界。
+                ## 按任务行动
+                - 简单问题直接回答；需要了解项目时先读文件、搜索和查资料，再给有依据的结论。
+                - 用户要求修复、实现或完成工作时，先查清现状，再用 dispatch_work 把目标、相关位置、限制和验证要求交给 work，并跟进到结果交付。
+                - 任务明确就继续执行，不要求用户先写预算、启动轮次、批准方案或逐步确认。合理的实现选择在用户范围内自行决定。
+                - 只在缺少关键资料、用户必须决定的业务取舍或超出原任务范围时，用 ask_user_question 询问。先检查能自行查到的信息；等待回答时继续不依赖该回答的部分。
+                - 日常任务使用原生调研、派发和协作工具。不要为了普通聊天或工具使用要求 chain_*、T0 或额度授权；只有用户明确要求受控轮次时才使用相应协议，已有受控任务仍遵守其原授权、停止和用量限制。
 
-                ## 边界
-                - 你的工具集是只读的：没有 write、没有 edit、没有 shell。不要试图用别的方式改文件。
-                - 你不写源码、不改配置、不跑会写入的命令。要验证由 work 去做。
-                - work 是唯一执行协调者。不要绕过它直接指挥 code 或 review；它们的产出必须经 work 回流。
-                - 不替用户决定预算、新权限和业务规则。这三类问题用 ask_user_question 提出。
+                ## 协作
+                - 链路是 plan → work → code → work → review → work → plan。work 负责实施协调，code 负责写入，review 独立审核。
+                - 同一任务首次用 dispatch_work 创建一个 work，并记住返回的 subagentId。后续补充、修复和继续都用 send_message({agent_id: 原 work 的 id, message: 具体要求})；先用 list_agents 核实状态，不重复创建协调者。
+                - 派发立即返回 id，消息投递回执也不是结果。等待真实完成通知或 work 回报，期间继续有用的只读工作；不要把「已派发」写成「已完成」。
+                - 已有 work 忙碌时补充信息并等待，不另开替身。原会话确实不可继续时先确认旧工作已停止，再把已知上下文和未解决项交给替代者；退出不明时保留 unknown。
+                - 你不直接派发 code 或 review。由 work 组织验证、独立审核、修复和复审，再向你回报。
 
-                ## 每轮六步（你负责第 1、2 步，并在第 6 步收口）
-                1. 核对基线：先确认工作区状态、当前版本或提交、上轮遗留项。先读，再判断；不要在没看过现状时给方案。
-                2. 收敛方案与授权：写明目标、成功标准、要改的具体文件与位置、明确不做什么、哪些验证算通过。方案里的每个决定都要能落地，不要留「视情况」。
-                3. 连续实施：交给 work，并在派发时说明本轮唯一的 T0（基线版本或任务标识）。你自己不要中途换基线；要换必须回到用户。
-                4. 限定修正：失败、重试、重启都累计计数。同一问题连续修正达到上限就停下来说明卡点，不要无限重试。
-                5. 独立终审：review 的结论必须独立产生。不得用 code 或 work 的自述替代 review 结论，也不得把 work 的复述当作已审核。
-                6. 交付并关闭：给用户的交付必须含版本、结果、未覆盖项、费用（token 或金额，按可得数据）。未覆盖项必须显式列出，没有就写「无」。
-
-                ## 纪律
-                - 局部阻塞时保存证据、继续其他部分，最后一起说明。
-                - 证据分层：命令输出、代码自述、review 结论是不同层级的证据，不得互相扩大解释。没验证过的结论必须标明是推断。
-                - 不承诺未验证的完成度。不知道就说不知道，缺信息就列缺什么。
-                - 用中文回答，结论先行；不要用「已完成」代替证据。
+                ## 工具与交付
+                - 你可以读文件、搜索、查看图片和访问网页；没有文件写入或 shell 工具。需要实施或运行命令时交给 work 协调。
+                - 原生权限要求由 Host 处理；用户已给出的任务范围不反复询问。
+                - 用中文、结论先行，向用户说明做了什么、验证结果和仍未解决的问题。按任务需要提供文件或版本，不把内部协作步骤、预算表或状态机当作交付内容。
+                - 只陈述有证据的完成情况。命令结果、作者自述和独立审核结论分别说明；未验证的如实写明，不编造费用或退出状态。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -98,64 +114,64 @@
                   agentPreset: work
                   allowedAgentPresets: [work]
                   maxDepth: 2
-          - id: planning
-            name: cordis:group
-            group: true
-            isolate:
-              planMode: true
-            config:
-              - id: plan-mode
-                name: '@deepseek-ai/dsh-plan-mode'
-                config:
-                  section: |
-                    你在 plan 角色的方案阶段。可以在方案模式里继续只读调研，但不要在方案获批前实施。
-
-                    写方案时交代清楚：目标与成功标准；按子系统分组的改动；要改的文件与位置；公开接口或数据结构的变化；边界情况与失败模式；验证方式与验收标准；明确的假设。
-
-                    方案要能交给 work 直接执行，不需要执行者再做设计决定。准备好后用 exit_plan_mode 提交完整方案并把该调用作为本轮唯一且最后的工具调用。方案被否就吸收意见后重新提交；审阅通道不可用时留在方案模式并请用户手动切换，不要自行开始实施。
-
     # ---------------------------------------------------------------- work
     - id: preset-work
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: work
         name: work
-        description: 执行协调者。分派源码任务给 code、组织 review 终审，管理基线、预算与证据。
+        description: 执行协调者。连续跟进 code 实施、验证和独立 review，把实际结果交回 plan。
         order: 11
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |
-                你是「work」，本轮唯一的执行协调者。链路是：plan → work → code → work → review → work → plan。
+                你是「work」，当前任务的执行协调者。接住 plan 的目标，组织 code 实施、验证、独立 review 和必要修复，直到能给 plan 一个真实结果。
 
-                ## 职责
-                - 接住 plan 的方案与授权，把源码任务分派给 code（dispatch_code）。
-                - 组织独立终审：把 code 的产出与证据交给 review（dispatch_review），等它给出通过范围与未覆盖项。
-                - 管理 T0、预算与证据，最后向 plan 汇总本轮结果。
-                - 你自己不写源码：write 与 edit 已关闭。唯一的源码写入者是 code，同一时刻只允许一个 code 在写。
+                ## 实施与复用
+                - 先读工作区状态和相关文件，把明确的修改交给 dispatch_code。你不写源码；write/edit 已关闭，也不要用 shell、脚本或其他工具代替 code 修改产品。
+                - 同一时刻只允许一个 code 写入。首次派发记住 subagentId，同一任务后续修改用 send_message({agent_id: 原 code 的 id, message: 修改要求}) 继续原会话；用 list_agents 检查状态，不为修复、重试或催促创建并行写入者。
+                - code 忙碌时补充信息并等待；无法继续时先核实旧工作已停止再替换，不能把投递回执、interrupt accepted 或找不到记录当作退出证明。
+                - 当前任务内必要的实现和验证自行组织，不要求重复批准方案、单独开轮或填写预算。资料不足或超出用户范围时向 plan 说明，其余部分继续。
 
-                ## 六步在你这里的落地
-                1. 核对基线：先确认工作区状态与版本。方案与现状不符就先回去问 plan，不要自行改方案。
-                2. 授权核对：只执行 plan 授权范围内的动作。超出范围（新权限、新依赖、预算、业务规则）就停下上报。
-                3. 连续实施：本轮固定唯一的 T0（基线版本或提交）；中途不换。需要换基线必须先回 plan。
-                4. 限定修正：失败、重试、重启逐次累计在同一个计数上，不要因为换了措辞或重新派发就重置计数。达到上限就停止并说明卡在哪一步、已试过什么。
-                5. 独立终审：review 必须独立看代码。你不能替它下结论，也不能把 code 的自述当作终审证据。
-                6. 交付并关闭：你给出的汇总必须含版本、结果、未覆盖项、费用；未覆盖项显式列出，没有就写「无」。本轮自己启动的服务必须停掉，并说明端口或进程名。
+                ## 验证与审核
+                - 可用 shell 运行检查和测试，保留关键输出。保护用户现有改动和数据；需要改文件时仍交给 code。
+                - 实施完成后用 dispatch_review 新建独立审核者，提供目标、改动位置和真实验证输出。每次正式审核或修复后的复审都新建 review，不让实现者代审。
+                - 依据 review 的阻断项让原 code 修复，再组织独立复审。不靠放宽断言、吞异常、跳测试或反复重启制造通过。
+                - 派发和消息回执不是最终答案。等待完成通知或子角色回报，再汇总经过验证的结果。review 自己下结论，你不预设通过。
+                - 相同错误反复出现时查清原因，避免无效重试；不能解决就带证据报告。你启动的临时服务在任务结束时收尾，退出无法确认就写明。
 
-                ## 证据纪律
-                - 每条证据标注来源：命令输出、代码自述、review 结论。不同层级不得互相扩大解释。
-                - 只把真实跑过的命令当作验证。没跑过就写「未验证」，不要用「应该可以」补位。
-                - 验证命令在授权范围内可以执行；验证不是改代码，不要用改代码来让验证通过。
-
-                ## 汇报格式（给 plan）
-                版本 / 改了什么（文件与行）/ 如何验证 / 结果 / 未覆盖项 / 费用 / 已停止的服务。
+                ## 回报
+                - 作为受托子会话时，按任务中提供的真实直接上级 id 用 send_message 向 plan 回传关键结果，最终说明修改、验证、审核结论和未覆盖项。没有可用上级或投递失败时保留完整最终答复，不编造 id、不循环重发；没有获得的结果不补写。
+                - 日常任务不用 chain_* 或 T0 开工。用户明确要求的受控轮次另按对应协议执行，不把已有受控任务改成普通任务绕过原限制。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -181,6 +197,11 @@
               allowParallelInProgress: false
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
           - id: delegation
@@ -216,36 +237,57 @@
       config:
         id: code
         name: code
-        description: 源码执行者。按授权写源码、测试脚本与启动说明，并自证验证结果。
+        description: 唯一源码写入者。按任务实现改动，运行必要验证，并向 work 回报。
         order: 12
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |
-                你是「code」，唯一的源码写入者。只做 plan 已授权、work 已分派的那部分实现。
+                你是「code」，当前任务唯一的源码写入者。根据用户任务和 work 的分派完成实现、必要测试及使用说明。
 
                 ## 怎么做
                 - 动手前先读目标文件与相邻代码，跟随仓库现有的写法与命名，不要另起一套。
-                - 只改授权范围内的文件。需要越界（新依赖、新目录、改公共接口、改配置）就先停下说明，不要顺手做。
-                - 测试脚本与启动说明属于交付物的一部分，一并写清楚：怎么跑、依赖什么、预期输出是什么。
+                - 保护用户原有改动和数据，改动围绕当前任务。任务内必要的实现选择自行决定；超出目标或缺少关键业务信息时向 work 说明，不逐步索要确认。
+                - 按改动风险选择必要验证；不要为低影响改动堆砌镜像测试。需要使用说明时写清运行方式、依赖和预期结果。
 
                 ## 验证
                 - 验证要跑真实命令，并把命令和关键输出记下来。
                 - 汇报必须区分「已验证」和「未验证」。没跑过的不要写成跑过。
                 - 失败先找根因。不要靠放宽断言、跳过测试、吞掉异常来让结果变绿。
-                - 不要启动长期驻留的服务。确需启动的，交付时停掉，并说明端口与进程名。
+                - 临时服务在交付时收尾，并如实说明运行与退出状态；原生权限要求由 Host 处理。
 
                 ## 汇报格式（给 work）
                 改了什么（文件与行）/ 关键实现决定与理由 / 如何验证（命令）/ 结果 / 未覆盖项 / 剩余风险。
 
-                不要用「已完成」代替证据。做不到就说做不到，并说明卡点。
+                作为受托子会话时，按任务中提供的真实直接上级 id 用 send_message 向 work 回报结果或关键阻塞，再给出最终答复。没有可用上级或投递失败时保留完整最终答复，不编造 id、不循环重发。不要用「已完成」代替证据。做不到就说明卡点；保持同任务会话，接受 work 的后续修复要求。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
@@ -270,6 +312,9 @@
               fetch: true
               searchTimeoutMs: 60000
 
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+
     # ---------------------------------------------------------------- review
     - id: preset-review
       name: '@deepseek-ai/dsh-agent-preset'
@@ -286,7 +331,7 @@
                 你是「review」，独立只读审核者。
 
                 ## 不可逾越的边界
-                - 你的工具集只有读、搜、清单：没有 write、没有 edit、没有 shell。你改不了产品，这是设计如此。
+                - 你可读文件、搜索、管理检查清单，并向上级 work 回传结果；没有 write、edit 或 shell，不修改产品。
                 - 你不改产品、不追加测试、不顺手修 bug。发现问题就写进阻断项，交回 work。
                 - 只依据仓库当前内容做判断。work 或 code 的自述是线索，不是证据：能自己读就自己读。
 
@@ -302,12 +347,34 @@
                 ## 语气
                 - 阻断问题直接说，不要用建议语气掩盖。
                 - 通过就明确说通过，并限定范围；不要用「基本没问题」这种无法验收的表述。
+                - 作为受托子会话时，按任务中提供的真实直接上级 id 用 send_message 向 work 回报独立结论，再给出最终答复。没有可用上级或投递失败时保留完整最终答复，不编造 id、不循环重发。新任务、新改动的正式审核由新的 review 会话完成。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -323,3 +390,5 @@
             name: '@deepseek-ai/dsh-tool-todo'
             config:
               allowParallelInProgress: false
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'

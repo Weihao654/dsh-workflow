@@ -1,4 +1,25 @@
-# 0.2.1-rc.20261107.40 — PARTIAL / NOT DEPLOYABLE
+# 0.3.0-workflow.20261107.2 — PARTIAL / NOT DEPLOYABLE
+## What changed in 0.3.0-workflow (against .40+scopefix.1)
+
+The default plan workflow no longer opens an authorized round or meters model I/O. A new session
+picks `plan` and talks normally; L2 recognises existing controlled rounds and leaves them untouched.
+The 13 controlled tools are hidden from the new workflow through the official scoped
+`tools.restrict` path, while native tools, permissions and the role-model settings card remain. New
+files: `lib/plan-start.js` plus the `plan-start` fixtures; versions are L2
+`0.3.0-workflow.20261107.2` and L1 `1.1.0-workflow.1`.
+
+Offline evidence: 209 fixture cases in 21 files (`node test/run.mjs --in-process`), plus
+`test/api.mjs` and `test/routes.mjs`; `workflow-mode.mjs` 15 cases, `workflow-tools.mjs` 9 cases and
+`plan-start-client.mjs` 21 cases; an L1 role-YAML/tool-matrix static check; independent review R2
+24/24 after fixing the preset-selected first-schema filter. Real model requests: 0. The install
+switched the two packages to independent vendor copies, preserved the 8 authority files and did not
+touch other profiles or the main repository.
+
+Not verified: real Host/GUI reload and full model collaboration after the restart; the explicit
+controlled-round legacy path keeps its provider duplicate-metering defect (`R-a9765be2` diagnosis,
+historical rows unchanged); Windows Job/WSL/production `chain_compute` were not re-run for this
+version.
+
 ## What changed in .40 (against .39)
 
 .39 could not boot the daily desktop profile: the Host exports no `DSH_PROFILE_DIR`, and

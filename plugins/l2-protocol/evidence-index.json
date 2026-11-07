@@ -1,7 +1,7 @@
 {
-  "version": "0.2.1-rc.20261107.40",
+  "version": "0.3.0-workflow.20261107.2",
   "verdict": "PARTIAL / NOT DEPLOYABLE",
-  "candidate": "dsh-role-chain-rc-20261106-r8",
+  "candidate": "dsh-workflow@0.3.0-workflow.20261107.2",
   "candidateCommit": null,
   "sourceBaseCommit": "b4f8057f9dfbf0b14446f21b795d61fc569a3de2",
   "mainReport": "ACCEPTANCE.md",
@@ -369,5 +369,31 @@
     "change": "resolveProfileDir: DSH_PROFILE_DIR first, else derive from <profile>/node_modules/dsh-role-chain-protocol via import.meta.url, validated by dsh.profile.bundles; otherwise fail closed with AUTHORITY_LOCATION_REQUIRED",
     "failedBoot": ".39 installed to the daily desktop profile threw AUTHORITY_LOCATION_REQUIRED at plugin load (desktop-next-2026-11-07.0.jsonl); rolled back to the 0.2.0-rc.1 junction",
     "verification": "unit tests test/profile-dir.mjs (4 cases) pin the resolver branches; an isolated CLI Host built from the frozen tree and launched WITHOUT DSH_PROFILE_DIR (profile r40test, port 18786) booted clean and served GET /role-chain/api/table → 200 {\"ok\":true}, i.e. apply() completed with no launcher variable (r40i rehearsal). The daily desktop profile boot is recorded separately in _reports/R40-INSTALL-RESULT-20261107.md once the user restarts the app."
+  },
+  "workflowMode": {
+    "version": "0.3.0-workflow.20261107.2",
+    "l1Version": "1.1.0-workflow.1",
+    "fixtureSuite": "209 cases / 21 files (node test/run.mjs --in-process) plus test/api.mjs and test/routes.mjs",
+    "focused": {
+      "workflow-mode.mjs": 15,
+      "workflow-tools.mjs": 9,
+      "plan-start-client.mjs": 21,
+      "l1-yaml-static": true,
+      "independent-review-r2": "24/24"
+    },
+    "install": "two independent vendor copies; 8 authority files unchanged; other profiles and the main repository untouched",
+    "realModelRequests": 0,
+    "verified": [
+      "offline fixtures",
+      "api/routes scripts",
+      "L1 role YAML/tool matrix (static)",
+      "independent review R2"
+    ],
+    "unverified": [
+      "real Host/GUI reload",
+      "full model collaboration",
+      "legacy controlled-round duplicate metering",
+      "Windows Job/WSL/production chain_compute re-run"
+    ]
   }
 }

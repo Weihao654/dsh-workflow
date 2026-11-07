@@ -40,7 +40,8 @@ async function fixture(t, { authority = true, noOpen = true } = {}) {
     const agent = { id, ctx: Object.freeze({ ordinaryScopeAgent: id }) }
     h.agents.set(id, agent)
     h.sessions.set(id, { id, header: { id, cwd: options.cwd ?? h.dir,
-      agentPreset: options.historicalPreset ?? preset, ...(options.parent ? { parentSession: options.parent, origin: 'subagent' } : {}) } })
+      agentPreset: options.historicalPreset ?? preset, ...(options.parent ? { parentSession: options.parent,
+        ...(options.fork ? { isSeeded: true } : { origin: 'subagent' }) } : {}) } })
     actual.set(id, { mounted: preset, projected: preset })
     return agent
   }
@@ -95,31 +96,33 @@ test('explicit plan/work/code/review cannot use model I/O without a trusted roun
   assert.equal(existsSync(h.controller.storeForCwd(h.dir).dir), false)
 })
 
-test('durable authorization protects an ordinary unbound session even without an active round', async t => {
-  const { h, add, deny } = await fixture(t)
+test('durable authorization does not enroll unrelated ordinary chats in the same workspace', async t => {
+  const { h, add, request, stream } = await fixture(t)
   const store = h.controller.storeForCwd(h.dir)
   await authorizeProject(store, resolveExec(h.ctx, { agent: h.plan.agent }), grant, 'fixture-human-command')
   const before = await readFile(store.statePath)
   for (const preset of ['standard', 'cordis']) {
     const agent = add(`granted-${preset}`, preset)
-    await deny(agent)
-    assert.match(h.controller.guard({ agent, name: 'native_shell' }), /CONTROLLED_ROUND/)
+    assert.equal((await request(agent)).fixtureOnly, true)
+    let calls = 0; await stream(agent.id, () => { calls++ }); assert.equal(calls, 1)
+    assert.equal(h.controller.guard({ agent, name: 'native_shell' }), undefined)
   }
   assert.deepEqual(await readFile(store.statePath), before)
 })
 
-test('an active round protects ordinary unbound sessions without relying on a profile authority flag', async t => {
-  const { h, add, deny } = await fixture(t, { authority: false, noOpen: false })
+test('an active round does not enroll unrelated ordinary chats without a profile authority flag', async t => {
+  const { h, add, request, stream } = await fixture(t, { authority: false, noOpen: false })
   const before = await readFile(h.store.statePath)
   for (const preset of ['standard', 'cordis']) {
     const agent = add(`active-${preset}`, preset)
-    await deny(agent)
-    assert.match(h.controller.guard({ agent, name: 'native_shell' }), /CONTROLLED_ROUND/)
+    assert.equal((await request(agent)).fixtureOnly, true)
+    let calls = 0; await stream(agent.id, () => { calls++ }); assert.equal(calls, 1)
+    assert.equal(h.controller.guard({ agent, name: 'native_shell' }), undefined)
   }
   assert.deepEqual(await readFile(h.store.statePath), before)
 })
 
-test('actual workingDirectory overrides historical cwd when selecting protected scope', async t => {
+test('actual workingDirectory overrides historical cwd without enrolling an unrelated ordinary chat', async t => {
   const { h, add, config, request, stream, deny } = await fixture(t)
   const other = join(h.dir, 'other-workspace'); await mkdir(other)
   const store = h.controller.storeForCwd(other)
@@ -129,7 +132,8 @@ test('actual workingDirectory overrides historical cwd when selecting protected 
   const agent = add('projected-cwd', 'standard', { cwd: h.dir })
   h.services.workingDirectory.get = session => session.id === agent.id ? other : session.header.cwd
   assert.equal(resolveExec(h.ctx, { agent }).cwd, other)
-  await deny(agent)
+  assert.equal((await request(agent)).fixtureOnly, true)
+  let firstCalls = 0; await stream(agent.id, () => { firstCalls++ }); assert.equal(firstCalls, 1)
   assert.deepEqual(await readFile(store.statePath), before)
   h.sessions.get(agent.id).header.cwd = other
   h.services.workingDirectory.get = session => session.id === agent.id ? h.dir : session.header.cwd
@@ -159,7 +163,7 @@ test('a genuine binding stays budgeted and stopped after its actual preset chang
   const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-binding-command',
     agent: h.plan.agent, rawInput: JSON.stringify(grant) })
   assert.equal(result.kind, 'success', result.text)
-  const store = h.controller.storeForCwd(h.dir)
+  const store = h.controller.storeForExec(h.plan)
   const original = await store.read(state => state.authorization)
   for (const preset of ['plan', 'standard', 'cordis']) {
     setPreset(h.plan.sessionId, preset)
@@ -195,7 +199,7 @@ test('a bound session cannot become ordinary by moving its live cwd, warm or col
   const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-cwd-binding-command',
     agent: h.plan.agent, rawInput: JSON.stringify(grant) })
   assert.equal(result.kind, 'success', result.text)
-  const store = h.controller.storeForCwd(h.dir)
+  const store = h.controller.storeForExec(h.plan)
   const original = await readFile(store.statePath)
   const other = join(h.dir, 'fresh-cwd'); await mkdir(other)
   setPreset(h.plan.sessionId, 'standard')
@@ -222,10 +226,9 @@ test('a bound session cannot become ordinary by moving its live cwd, warm or col
 
 test('a healthy unrelated foreign ledger does not protect an ordinary session in a different workspace', async t => {
   const { h, add, request, stream } = await fixture(t)
-  const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-unrelated-command',
-    agent: h.plan.agent, rawInput: JSON.stringify(grant) })
-  assert.equal(result.kind, 'success', result.text)
+  // Deliberately retain a valid legacy ledger to verify marker-less upgrade compatibility.
   const protectedStore = h.controller.storeForCwd(h.dir)
+  await authorizeProject(protectedStore, resolveExec(h.ctx, { agent: h.plan.agent }), grant, 'fixture-unrelated-legacy-command')
   const before = await readFile(protectedStore.statePath)
   const other = join(h.dir, 'ordinary-other-workspace'); await mkdir(other)
   for (const markerPresent of [true, false]) {
@@ -266,7 +269,7 @@ test('changing live cwd before a second authorize cannot rebind a session with a
   const warmHandler = h.commands.get('chain-authorize').handler
   const first = await warmHandler({ commandId: 'fixture-authorize-first', agent: h.plan.agent, rawInput: JSON.stringify(grant) })
   assert.equal(first.kind, 'success', first.text)
-  const originalStore = h.controller.storeForCwd(h.dir)
+  const originalStore = h.controller.storeForExec(h.plan)
   const original = await readFile(originalStore.statePath)
   const other = join(h.dir, 'authorize-other-cwd'); await mkdir(other)
   h.services.workingDirectory.get = () => other
@@ -292,4 +295,112 @@ test('initialized but unreadable authority is never treated as an ordinary empty
   for (const preset of ['standard', 'cordis']) await deny(add(`missing-state-${preset}`, preset), 'STATE_UNREADABLE')
   // Only remove this disposable fixture marker so controller teardown can inspect an empty state.
   await rm(store.markerPath)
+})
+
+test('unrelated ordinary chats stay independent while a same-cwd round is active, expired or closed', async t => {
+  const { h, add, request, stream } = await fixture(t)
+  const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-lifecycle', agent: h.plan.agent, rawInput: JSON.stringify(grant) })
+  assert.equal(result.kind, 'success', result.text)
+  const store = h.controller.storeForExec(h.plan)
+  for (const phase of ['active', 'expired', 'closed']) {
+    if (phase !== 'active') await store.mutate(state => {
+      if (phase === 'expired') state.authorization.deadlineAt = new Date(0).toISOString()
+      else { state.rounds[state.activeRoundId].closedAt = new Date().toISOString(); state.activeRoundId = null }
+    })
+    const before = await readFile(store.statePath)
+    for (const preset of ['standard', 'cordis']) {
+      const agent = add(`${phase}-ordinary-${preset}`, preset)
+      assert.equal((await request(agent)).fixtureOnly, true)
+      let calls = 0; await stream(agent.id, () => { calls++ }); assert.equal(calls, 1)
+      assert.equal(h.controller.guard({ agent, name: 'native_shell' }), undefined)
+    }
+    assert.deepEqual(await readFile(store.statePath), before)
+  }
+})
+
+test('grant-only owner cannot become unprotected by changing to an ordinary preset before binding', async t => {
+  const { h, setPreset, deny } = await fixture(t)
+  const store = h.controller.storeForCwd(h.dir)
+  await authorizeProject(store, resolveExec(h.ctx, { agent: h.plan.agent }), grant, 'fixture-grant-only')
+  const before = await readFile(store.statePath)
+  setPreset(h.plan.sessionId, 'standard')
+  await deny(h.plan.agent)
+  assert.match(h.controller.guard({ agent: h.plan.agent, name: 'native_shell' }), /CONTROLLED_ROUND/)
+  assert.deepEqual(await readFile(store.statePath), before)
+})
+
+test('unbound ordinary delegated children inherit controlled ancestry across preset changes and cold reconstruction', async t => {
+  const { h, add, setPreset, deny, authorityRoot } = await fixture(t)
+  const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-descendants', agent: h.plan.agent, rawInput: JSON.stringify(grant) })
+  assert.equal(result.kind, 'success', result.text)
+  const child = add('unbound-ordinary-child', 'standard', { parent: h.plan.sessionId })
+  const grandchild = add('unbound-ordinary-grandchild', 'cordis', { parent: child.id })
+  setPreset(h.plan.sessionId, 'standard')
+  const store = h.controller.storeForExec(h.plan), before = await readFile(store.statePath)
+  for (const agent of [child, grandchild]) {
+    await deny(agent)
+    assert.match(h.controller.guard({ agent, name: 'native_shell' }), /CONTROLLED_ROUND/)
+  }
+  // The exact missing parent id is still checked against durable membership.
+  h.sessions.delete(h.plan.sessionId)
+  const cold = new ChainController(h.ctx, { authorityRoot }); h.extraControllers.push(cold)
+  const dispose = installUsage(h.ctx, cold); t.after(dispose)
+  for (const agent of [child, grandchild]) {
+    await assert.rejects(cold.beforeRequest(agent), { code: 'MANAGED_ROUND_REQUIRED' })
+    let calls = 0
+    await assert.rejects(async () => {
+      for await (const _ of h.hooks.get('llm/stream').at(-1)({ sessionId: agent.id, maxTokens: 16, messages: [] }, async function* () { calls++ })) {}
+    }, { code: 'MANAGED_ROUND_REQUIRED' })
+    assert.equal(calls, 0)
+  }
+  assert.deepEqual(await readFile(store.statePath), before)
+})
+
+test('unrelated ordinary delegation and user-created forks stay independent, including an unloaded fork source', async t => {
+  const { h, add, request, stream, deny } = await fixture(t)
+  const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-forks', agent: h.plan.agent, rawInput: JSON.stringify(grant) })
+  assert.equal(result.kind, 'success', result.text)
+  const root = add('ordinary-parent', 'standard')
+  const child = add('ordinary-delegated-child', 'cordis', { parent: root.id })
+  const fork = add('ordinary-human-fork', 'standard', { parent: h.plan.sessionId, fork: true })
+  const delegatedFork = add('ordinary-model-fork', 'standard', { parent: h.plan.sessionId })
+  h.sessions.delete(h.plan.sessionId)
+  const store = h.controller.storeForExec(h.plan), before = await readFile(store.statePath)
+  for (const agent of [root, child, fork]) {
+    assert.equal((await request(agent)).fixtureOnly, true)
+    let calls = 0; await stream(agent.id, () => { calls++ }); assert.equal(calls, 1)
+    assert.equal(h.controller.guard({ agent, name: 'native_shell' }), undefined)
+  }
+  await deny(delegatedFork)
+  assert.deepEqual(await readFile(store.statePath), before)
+})
+
+test('unbound delegated descendants cannot leave an ancestor ledger by changing cwd, warm or cold', async t => {
+  const { h, add, authorityRoot } = await fixture(t)
+  const result = await h.commands.get('chain-authorize').handler({ commandId: 'fixture-descendant-cwd', agent: h.plan.agent, rawInput: JSON.stringify(grant) })
+  assert.equal(result.kind, 'success', result.text)
+  const other = join(h.dir, 'other-delegated-cwd'); await mkdir(other)
+  const child = add('moved-delegated-child', 'standard', { parent: h.plan.sessionId, cwd: other })
+  const store = h.controller.storeForExec(h.plan), before = await readFile(store.statePath)
+  const cold = new ChainController(h.ctx, { authorityRoot }); h.extraControllers.push(cold)
+  for (const controller of [h.controller, cold]) {
+    await assert.rejects(controller.beforeRequest(child), { code: 'EXECUTION_SCOPE_CHANGED' })
+    assert.match(controller.guard({ agent: child, name: 'native_shell' }), /^CONTROL_STATE_UNAVAILABLE:/)
+  }
+  assert.deepEqual(await readFile(store.statePath), before)
+})
+
+test('invalid or unavailable delegated lineage is rejected before downstream model I/O', async t => {
+  const { h, add, deny } = await fixture(t)
+  const loop = add('cyclic-child', 'standard', { parent: 'cyclic-child' })
+  await deny(loop, 'SESSION_LINEAGE_INVALID')
+  const missing = add('unknown-child', 'standard', { parent: 'missing-parent' })
+  await deny(missing, 'SESSION_LINEAGE_UNAVAILABLE')
+  const root = add('mismatched-parent', 'standard')
+  h.sessions.get(root.id).header.id = 'different-id'
+  await deny(add('mismatched-child', 'standard', { parent: root.id }), 'SESSION_LINEAGE_INVALID')
+  const orphan = add('orphan-child', 'standard')
+  h.sessions.get(orphan.id).header.origin = 'subagent'
+  await deny(orphan, 'SESSION_LINEAGE_INVALID')
+  assert.equal(existsSync(h.controller.storeForCwd(h.dir).dir), false)
 })

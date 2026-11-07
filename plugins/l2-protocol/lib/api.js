@@ -17,8 +17,10 @@
 
 import { loadRoutes, saveRoleModels } from './role-models.js'
 import { validateRoutes } from './tools.js'
+import { planStartStatus } from './plan-start.js'
 
 export const API_PATH = '/role-chain/api/table'
+export const PLAN_START_API_PATH = '/role-chain/api/plan-start'
 const MAX_BODY_BYTES = 64 * 1024
 const CATALOG_TTL_MS = 60_000
 
@@ -178,6 +180,31 @@ function serverOf(ctx) {
   } catch {
     return undefined
   }
+}
+
+// Read-only bootstrap state. Authorization itself still travels through the
+// Host Commands service, which resolves the live Agent and records human input.
+export function registerPlanStartApi(ctx, controller) {
+  const server = serverOf(ctx)
+  if (!server || typeof server.register !== 'function') return { registered: false, path: PLAN_START_API_PATH, dispose() {} }
+  const handler = async (request, response) => {
+    if (request.method !== 'GET') {
+      response.writeHead(405, { allow: 'GET' }); response.end(); return
+    }
+    try {
+      const url = new URL(request.url ?? PLAN_START_API_PATH, 'http://127.0.0.1')
+      const sessionId = url.searchParams.get('sessionId')
+      if (!sessionId?.trim()) { sendJson(response, 400, { ok: false, code: 'BAD_ARGS', message: 'sessionId is required.' }); return }
+      sendJson(response, 200, await planStartStatus(ctx, controller, sessionId))
+    } catch (error) {
+      const status = ['ROLE_DENIED', 'ROLE_BINDING_INVALID', 'EXECUTION_SCOPE_CHANGED'].includes(error.code) ? 409 : 503
+      sendJson(response, status, { ok: false, code: error.code ?? 'PLAN_START_UNAVAILABLE', message: String(error.message ?? error) })
+    }
+  }
+  try {
+    const dispose = server.register({ kind: 'exact', path: PLAN_START_API_PATH, handler })
+    return { registered: true, path: PLAN_START_API_PATH, dispose: typeof dispose === 'function' ? dispose : () => {} }
+  } catch (error) { return { registered: false, path: PLAN_START_API_PATH, error: String(error.message ?? error), dispose() {} } }
 }
 
 /**

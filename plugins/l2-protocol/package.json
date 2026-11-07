@@ -1,7 +1,7 @@
 {
   "name": "dsh-role-chain-protocol",
-  "version": "0.2.1-rc.20261107.40+scopefix.1",
-  "description": "Fourteen role-chain tools for controlled round execution, durable stop intent, fixed deadlines, request usage accounting and independent evidence. Compute requires full read-only confinement; partial backends are refused.",
+  "version": "0.3.0-workflow.20261107.2",
+  "description": "Native plan/work/code/review collaboration by default, with preserved controlled-round authorization and audit support for existing or explicitly enrolled tasks.",
   "files": [
     "lib/",
     "bridge/",

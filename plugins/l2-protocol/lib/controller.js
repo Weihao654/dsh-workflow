@@ -1,6 +1,6 @@
 // Host-owned capabilities, not roster ids, authorize cancellation.
 import { randomUUID } from 'node:crypto'
-import { forCwd, canonicalCwd } from './store.js'
+import { forCwd, forSession, forRound, canonicalCwd } from './store.js'
 import { resolve, relative, dirname, basename, sep, isAbsolute } from 'node:path'
 import { resolveExec } from './roles.js'
 import { serviceOf, bounded } from './host.js'
@@ -10,8 +10,9 @@ import { aggregate, assertAdmissible, assertMember, bindingOf, budgetOf, current
 import { DISPATCH_AUTHORITY, pickProvider, policyFor, rosterKey } from './dispatch.js'
 import { executionDir, launchManagedJob, readJobProof, signalManagedJob } from './managed-jobs.js'
 import { acquireAdmissionLock } from './admission.js'
-import { authorizeProject, assertProjectAdmission } from './authorization.js'
+import { authorizeProject, assertProjectAdmission, parseAuthorizationInput } from './authorization.js'
 import { openRound } from './service.js'
+import { WorkflowToolVisibility } from './workflow-tools.js'
 
 const USER = Symbol('genuine-human-command')
 const OWNER = Symbol('preauthorized-controller')
@@ -76,6 +77,9 @@ export class ChainController {
   constructor(ctx, options = {}) {
     this.ctx = ctx
     this.now = options.now ?? Date.now
+    // The installed default is a normal Host session with role collaboration.
+    // Existing durable controlled tasks always retain their original policy.
+    this.workflowByDefault = options.workflowByDefault === true
     // Trusted apply-time configuration only, never model tool arguments.
     this.storeOptions = options.authorityRoot ? { authorityRoot: options.authorityRoot } : {}
     this.hostId = randomUUID()
@@ -91,13 +95,70 @@ export class ChainController {
     this.disposers = []
     this.pending = new Set()
     this.closed = false
+    this.workflowTools = new WorkflowToolVisibility(this, { enabled: this.workflowByDefault })
   }
   storeForCwd(cwd) { return forCwd(cwd, this.storeOptions) }
+  storeForExec(exec) {
+    if (!this.storeOptions.authorityRoot) return this.storeForCwd(exec.cwd)
+    const lineage = this.sessionLineage(exec)
+    let rootSessionId = exec.role === 'plan' && exec.isRoot ? exec.sessionId : null
+    if (this.workflowByDefault && !lineage.incomplete && !rootSessionId) {
+      const root = resolveExec(this.ctx, { sessionId: lineage.ids.at(-1) })
+      if (root.bindingValid && root.role === 'plan' && root.isRoot) rootSessionId = root.sessionId
+    }
+    return forSession(exec.cwd, lineage.ids, {
+      ...this.storeOptions,
+      ...(rootSessionId ? { rootSessionId } : {}),
+    })
+  }
+  sessionLineage(exec) {
+    const sessions = serviceOf(this.ctx, 'sessions'), ids = [], seen = new Set()
+    let id = exec.sessionId
+    while (id) {
+      if (seen.has(id) || ids.length >= 128) fail('SESSION_LINEAGE_INVALID', 'Session ancestry is cyclic or exceeds the supported depth.')
+      seen.add(id); ids.push(id)
+      const session = sessions?.get?.(id)
+      // Include the missing parent's id so its durable membership still wins.
+      if (!session) return { ids, incomplete: true }
+      if (String(session.id) !== id || String(session.header?.id) !== id)
+        fail('SESSION_LINEAGE_INVALID', 'Session ancestry does not match the Host session identity.')
+      // User-created forks are independent chats, like a new ordinary root.
+      // Only Host-created subagents inherit delegated execution membership.
+      if (session.header.origin !== 'subagent') return { ids, incomplete: false }
+      const parent = session.header.parentSession
+      if (parent == null) {
+        if (session.header.origin === 'subagent') fail('SESSION_LINEAGE_INVALID', 'A subagent is missing its Host parent session.')
+        return { ids, incomplete: false }
+      }
+      if (typeof parent !== 'string' || !parent.trim()) fail('SESSION_LINEAGE_INVALID', 'Session ancestry contains an invalid parent id.')
+      id = parent
+    }
+    return { ids, incomplete: false }
+  }
+  protectsSession(state, exec) {
+    const { ids, incomplete } = this.sessionLineage(exec)
+    // Enrollment belongs to sessions and delegated subagents, never every chat sharing a cwd.
+    if (ids.some(id => Object.hasOwn(state.sessionBindings ?? {}, id) || state.authorization?.sessionId === id)) return true
+    if (incomplete) fail('SESSION_LINEAGE_UNAVAILABLE', 'The source session is not loaded; reopen it before using this derived session so controlled ancestry can be checked.')
+    return false
+  }
+  isWorkflowSession(exec, store, state) {
+    if (!this.workflowByDefault || !exec.bindingValid || !exec.role || this.closed) return false
+    store ??= this.storeForExec(exec)
+    this.assertSessionLocation(store, exec)
+    state ??= store.snapshot()
+    if (this.protectsSession(state, exec) || state.authorization || Object.keys(state.rounds ?? {}).length) return false
+    const lineage = this.sessionLineage(exec)
+    if (lineage.incomplete) fail('SESSION_LINEAGE_UNAVAILABLE', 'Reopen the source plan session before continuing this delegated task.')
+    const rootId = lineage.ids.at(-1)
+    const root = rootId === exec.sessionId ? exec : resolveExec(this.ctx, { sessionId: rootId })
+    return root.bindingValid && root.role === 'plan' && root.isRoot === true
+  }
   assertSessionLocation(store, exec) {
     const known = this.sessions.get(exec.sessionId)
     if (known && known.store.key !== store.key)
       fail('EXECUTION_SCOPE_CHANGED', 'A protected session cannot leave its original project ledger by changing cwd.')
-    store.assertSessionLocation(exec.sessionId)
+    for (const id of this.sessionLineage(exec).ids) store.assertSessionLocation(id)
   }
   log(error) { try { this.ctx.logger?.warn?.(`[role-chain] ${error?.message ?? error}`) } catch {} }
   track(promise) {
@@ -105,7 +166,7 @@ export class ChainController {
     this.pending.add(task)
     return task
   }
-  barrierKey(store, roundId, executionId = '*') { return `${store.rootDir}\0${roundId}\0${executionId}` }
+  barrierKey(store, roundId, executionId = '*') { return `${store.key}\0${roundId}\0${executionId}` }
   blocked(store, execution) {
     if (this.closed || this.barriers.has(this.barrierKey(store, execution.roundId))) return true
     const round = store.snapshot().rounds[execution.roundId], seen = new Set()
@@ -126,7 +187,7 @@ export class ChainController {
   }
   registerDefinition(definition) { this.allowedDefinitions.add(definition); this.allowedExecutors.add(definition.execute) }
   async attach(store, exec) {
-    this.stores.set(store.rootDir, store)
+    this.stores.set(store.key, store)
     const found = await store.read(state => bindingOf(state, exec.sessionId))
     if (!found) return null
     const identity = { sessionId: exec.sessionId, roundId: found.round.id,
@@ -144,12 +205,14 @@ export class ChainController {
     const id = String(sessionId)
     const exec = resolveExec(this.ctx, { sessionId: id })
     if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
-    this.assertSessionLocation(this.storeForCwd(exec.cwd), exec)
+    const store = this.storeForExec(exec)
+    this.assertSessionLocation(store, exec)
+    if (this.isWorkflowSession(exec, store)) return null
     let known = this.sessions.get(id)
     if (!known) {
       const sessions = serviceOf(this.ctx, 'sessions'), session = sessions?.get?.(id)
       if (!session) return null
-      known = await this.attach(this.storeForCwd(exec.cwd), exec)
+      known = await this.attach(store, exec)
     }
     if (!known) return null
     return known.store.read(state => {
@@ -161,14 +224,18 @@ export class ChainController {
   }
   async beforeRequest(agent, signal) {
     if (signal?.aborted) fail('CANCELLED', 'The request was cancelled before admission.')
-    const exec = resolveExec(this.ctx, { agent, signal }), store = this.storeForCwd(exec.cwd)
+    const exec = resolveExec(this.ctx, { agent, signal }), store = this.storeForExec(exec)
     if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
     this.assertSessionLocation(store, exec)
+    const workflow = this.isWorkflowSession(exec, store)
+    this.workflowTools.sync(exec, workflow, [...this.allowedDefinitions].map(tool => tool.name))
+    if (workflow) return null
     const admission = await this.attach(store, exec)
     if (!admission) {
-      // A profile-owned ledger is a storage/authorization policy, not project enrollment.
-      const protectedScope = await store.read(state => Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt)))
-      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', 'A trusted preauthorized round binding is required before protected model I/O.')
+      const protectedScope = await store.read(state => this.protectsSession(state, exec))
+      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', exec.role === 'plan' && exec.isRoot
+        ? '请先在本会话下方的「启动 plan」卡片中确认新任务目标和额度，再发送消息。新 plan 使用独立授权，不会占用或重置其他会话。'
+        : 'A trusted preauthorized round binding is required before protected model I/O.')
       return null
     }
     const execution = await store.read(state => roundOf(state, admission.identity.roundId).executions[admission.identity.executionId])
@@ -388,7 +455,7 @@ export class ChainController {
         fail('UNAUTHORIZED', 'Only the actual owner/ancestor may cancel this execution.')
       if (target.kind === 'job' && !caller.root) {
         const held = this.live.get(target.id)
-        if (!held || held.store.rootDir !== store.rootDir || held.execution.nonce !== target.nonce)
+        if (!held || held.store.key !== store.key || held.execution.nonce !== target.nonce)
           fail('UNAUTHORIZED', 'An ancestor also needs the held capability for this exact controlled job.')
       }
     } else if (!caller.root || exec.isRoot !== true || round.openedBy.sessionId !== exec.sessionId)
@@ -639,12 +706,13 @@ export class ChainController {
   }
   guard(execution) {
     try {
-      const exec = resolveExec(this.ctx, execution), store = this.storeForCwd(exec.cwd)
+      const exec = resolveExec(this.ctx, execution), store = this.storeForExec(exec)
       if (!exec.bindingValid) return `ROLE_BINDING_INVALID: ${exec.bindingError}`
       this.assertSessionLocation(store, exec)
       const state = store.snapshot()
       const found = bindingOf(state, exec.sessionId)
-      const protectedScope = Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt))
+      if (!found && this.isWorkflowSession(exec, store, state)) return undefined
+      const protectedScope = this.protectsSession(state, exec)
       if (!found && !exec.role && !protectedScope) return undefined
       if (!found && !store.requiresAuthorization && !state.activeRoundId && exec.role === 'plan') return undefined
       const stopped = found && (found.round.control?.resumeBlocked || found.execution.resumeBlocked || this.blocked(store, found.execution))
@@ -683,14 +751,15 @@ export class ChainController {
     if (typeof this.ctx.tools?.guard === 'function') this.disposers.push(this.ctx.tools.guard(exec => this.guard(exec)))
     const commands = serviceOf(this.ctx, 'commands')
     if (commands?.register) {
-      this.disposers.push(commands.register({ name: 'chain-authorize', description: '人工预授权并绑定首轮；无模型调用，不允许替换或延长既有项目授权。',
+      this.disposers.push(commands.register({ name: 'chain-authorize', description: '人工确认本 plan 任务授权并绑定首轮；无模型调用，不替换或延长既有授权。',
         input: { hint: '<JSON: authorizationId, goal, budget>' }, recordInput: true,
         handler: async invocation => {
           try {
-            const args = JSON.parse(invocation.rawInput.replace(/^\/chain-authorize\s*/, '').trim())
-            const exec = resolveExec(this.ctx, invocation), store = this.storeForCwd(exec.cwd)
+            const args = parseAuthorizationInput(invocation.rawInput)
+            const exec = resolveExec(this.ctx, invocation), store = this.storeForExec(exec)
             this.assertSessionLocation(store, exec)
             const granted = await authorizeProject(store, exec, args, invocation.commandId, this.now())
+            this.workflowTools.sync(exec, false, [...this.allowedDefinitions].map(tool => tool.name))
             const prior = await store.read(state => ({ active: state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt ? state.activeRoundId : null, everOpened: Object.keys(state.rounds).length > 0 }))
             // Recover grant-persisted/open-failed bootstrap, never reset a previously opened project.
             const round = granted.duplicate && prior.everOpened ? { roundId: prior.active, duplicate: true } : await openRound(store, exec, args)
@@ -705,7 +774,11 @@ export class ChainController {
             const raw = invocation.rawInput.replace(/^\/chain-stop\s*/, '').trim()
             const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(raw)
             if (!match) fail('BAD_ARGS', 'Use /chain-stop <roundId> <requestId> <reason>.')
-            const exec = resolveExec(this.ctx, invocation), store = this.storeForCwd(exec.cwd)
+            const exec = resolveExec(this.ctx, invocation), sessionStore = this.storeForExec(exec)
+            this.assertSessionLocation(sessionStore, exec)
+            // A genuine human may stop an exact task from another local chat,
+            // including when its owner is unloaded. Model tools never use this lookup.
+            const store = forRound(exec.cwd, match[1], this.storeOptions)
             const result = await this.stopWithAuthority(store, { roundId: match[1], requestId: match[2], reason: match[3] },
               { token: USER, source: 'human-command' })
             return { kind: 'success', text: JSON.stringify(result) }
@@ -713,10 +786,31 @@ export class ChainController {
         } }))
     }
     if (typeof this.ctx.on === 'function') {
+      this.disposers.push(this.ctx.on('agent/created', ({ agent }) => {
+        // This lifecycle runs before the first system-prompt/schema assembly.
+        // Request hooks alone are too late to hide the initial controlled catalog.
+        try {
+          const exec = resolveExec(this.ctx, { agent })
+          if (exec.bindingValid) this.workflowTools.sync(exec, this.isWorkflowSession(exec),
+            [...this.allowedDefinitions].map(tool => tool.name))
+        } catch (error) { this.log(error) }
+      }))
+      this.disposers.push(this.ctx.on('agent-preset/selected', (sessionId) => {
+        // Selecting plan in an existing blank chat recomposes its Agent
+        // without another created event. Refresh before the first assembly.
+        try {
+          const agent = serviceOf(this.ctx, 'agents')?.get?.(String(sessionId))
+          if (!agent) return
+          const exec = resolveExec(this.ctx, { agent })
+          if (exec.bindingValid) this.workflowTools.sync(exec, this.isWorkflowSession(exec),
+            [...this.allowedDefinitions].map(tool => tool.name))
+        } catch (error) { this.log(error) }
+      }))
       this.disposers.push(this.ctx.on('agent/disposed', ({ agent }) => {
         // Events prove only the exact held Agent instance. A cold-resumed Agent
         // may share its session id with an already-disposed older instance.
         if (!agent) return
+        this.workflowTools.release(agent)
         for (const live of this.live.values()) if (live.agent === agent && !live.activation)
           this.track(this.proveAgent(live.store, live.execution, 'agent/disposed:exact-instance'))
       }))
@@ -731,6 +825,7 @@ export class ChainController {
       for (const roundId of ids) await this.autoStop(store, roundId, 'controller-unload')
     }
     this.closed = true
+    this.workflowTools.dispose()
     await bounded(Promise.all([...this.pending]), 1500)
     for (const dispose of this.disposers.reverse()) if (typeof dispose === 'function') dispose()
   }

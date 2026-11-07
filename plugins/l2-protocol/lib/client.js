@@ -156,6 +156,229 @@ window.__ModuleLoader__.load({
       return `（响应不是 JSON：${head}${body.length > 120 ? '…' : ''}）`
     }
 
+    const PLAN_START_API = '/role-chain/api/plan-start'
+    const PLAN_BUDGET_FIELDS = [
+      ['tokens', '总 token 额度', 600000],
+      ['requests', '总请求次数', 20],
+      ['wallMinutes', '最长时间（分钟）', 30],
+      ['outputCap', '单次输出上限', 4096],
+      ['closeoutRequests', '预留收尾请求', 6],
+      ['closeoutTimeMs', '预留收尾时间（毫秒）', 120000],
+    ]
+    const planDraft = () => Object.fromEntries(PLAN_BUDGET_FIELDS.map(([key, , value]) => [key, String(value)]))
+
+    // A session-scoped dock receives these standard sources from uiSession.
+    // Approval uses the real Commands Remote, whose Host executor mints the
+    // command id and records its genuine user-command lifecycle. A settings
+    // HTTP write must never manufacture that authority.
+    function PlanStartCard({ sessionId, useProjection, runPlanCommand, planBlocks }) {
+      const preset = typeof useProjection === 'function' ? useProjection('agentPreset') : undefined
+      const identity = `${String(sessionId ?? '')}\0${String(preset ?? '')}`
+      const current = React.useRef(identity)
+      current.current = identity
+      const requests = React.useRef(0)
+      const pending = React.useRef(new Set())
+      const [status, setStatus] = React.useState(null)
+      const [goal, setGoal] = React.useState('')
+      const [draft, setDraft] = React.useState(planDraft)
+      const [loading, setLoading] = React.useState(false)
+      const [busyFor, setBusyFor] = React.useState(null)
+      const [notice, setNotice] = React.useState(null)
+
+      const load = React.useCallback(async () => {
+        if (!sessionId || preset !== 'plan') return
+        const sequence = ++requests.current
+        const belongs = () => current.current === identity && sequence === requests.current
+        setLoading(true)
+        try {
+          const response = await fetch(`${PLAN_START_API}?sessionId=${encodeURIComponent(sessionId)}`, {
+            headers: { accept: 'application/json' },
+          })
+          const payload = parseJson(await response.text())
+          if (!response.ok || payload?.ok !== true) throw new Error(payload?.message ?? '暂时无法读取启动状态，请重试。')
+          if (payload.sessionId !== sessionId) throw new Error('会话已变化，请重新读取启动状态。')
+          if (belongs()) {
+            setStatus(payload)
+            setNotice(null)
+          }
+        } catch (error) {
+          if (belongs()) {
+            // A failed refresh cannot erase a known controlled stop. A new
+            // session stays unknown until its own Host status arrives.
+            setStatus(previous => previous?.sessionId === sessionId ? previous : null)
+            setNotice({ identity, text: `读取失败：${error?.message ?? error}` })
+          }
+        } finally {
+          if (belongs()) setLoading(false)
+        }
+      }, [sessionId, preset, identity])
+
+      React.useEffect(() => {
+        current.current = identity
+        setStatus(null)
+        setGoal('')
+        setDraft(planDraft())
+        setNotice(null)
+        setBusyFor(pending.current.has(sessionId) ? identity : null)
+        if (sessionId && preset === 'plan') void load()
+        else setLoading(false)
+        return () => {
+          requests.current++
+          if (current.current === identity) current.current = null
+        }
+      }, [sessionId, preset, identity, load])
+
+      const liveStatus = status?.sessionId === sessionId ? status : null
+      const state = liveStatus?.state
+      const restoring = state === 'grant-only'
+      const grant = liveStatus?.authorization
+      const restoreValid = restoring && grant && grant.sessionId === sessionId && typeof grant.id === 'string' &&
+        typeof grant.goal === 'string' && grant.budget && typeof grant.budget === 'object'
+      const canStart = liveStatus?.isRoot === true && (state === 'ready' || restoreValid)
+      const busy = busyFor === identity || pending.current.has(sessionId)
+      const message = notice?.identity === identity ? notice.text : ''
+      const controlledState = ['ready', 'grant-only', 'other-owner', 'bound', 'stopped', 'closed'].includes(state)
+      const blockReason = !sessionId || preset !== 'plan' || state === 'workflow' ? null
+        : busy ? '正在启动 plan，请等待授权和绑定完成。'
+        : !controlledState ? null
+        : state === 'bound' ? null
+        : message ? 'plan 启动尚未完成，请查看启动卡片并重新读取状态。'
+        : ({
+          ready: '请先确认目标和额度，启动 plan 后再发送消息。',
+          'grant-only': '请先在启动卡片恢复本轮绑定，再发送消息。',
+          'other-owner': '本会话尚未绑定，请查看启动卡片中的授权状态。',
+          stopped: '本轮已停止，请新建 plan 会话开始新任务。',
+          closed: '本轮已关闭，请新建 plan 会话开始新任务。',
+        }[state] ?? null)
+
+      // The Host's public composer-block registry is presentation only. Keep
+      // its existing owner intact; cleanup releases only our exact object.
+      // Missing UI capability degrades to the still-enforced Host gate.
+      React.useEffect(() => {
+        if (!blockReason || typeof planBlocks?.set !== 'function' || typeof planBlocks?.storeFor !== 'function') return
+        let store, block
+        try {
+          store = planBlocks.storeFor(sessionId)
+          if (typeof store?.getSnapshot !== 'function' || store.getSnapshot() !== undefined) return
+          block = { reason: blockReason }
+          planBlocks.set(sessionId, block)
+        } catch { return }
+        return () => {
+          try {
+            if (store.getSnapshot() === block) planBlocks.set(sessionId, undefined)
+          } catch {}
+        }
+      }, [sessionId, preset, planBlocks, blockReason])
+
+      // No state read, authority write or model request for ordinary chats.
+      if (!sessionId || preset !== 'plan') return null
+      if (liveStatus && liveStatus.role !== 'plan') return null
+      // Default plan conversations use the Host's ordinary workflow behavior.
+      // Reading their classification must neither flash a budget form nor
+      // temporarily disable their input. Explicit controlled states keep the
+      // original enrollment/recovery card and enforcement hints below.
+      if (state === 'workflow' || !liveStatus) return null
+      const summary = {
+        bound: '已就绪，可以在本会话继续与 plan 对话。',
+        stopped: '本轮已停止，不能重新启动或延长额度。',
+        closed: '本轮已关闭，请保留原记录。',
+        'other-owner': '此项目已有其他会话的授权，请返回原 plan 会话继续，保留原轮次。',
+        'grant-only': '已保存授权，恢复绑定会继续使用原目标、额度与期限。',
+      }[state]
+
+      const start = async () => {
+        if (!canStart || loading || pending.current.has(sessionId) || current.current !== identity) return
+        let args
+        if (restoring) args = { authorizationId: grant.id, goal: grant.goal, budget: { ...grant.budget } }
+        else {
+          const target = goal.trim()
+          const budget = Object.fromEntries(PLAN_BUDGET_FIELDS.map(([key]) => [key, Number(draft[key])]))
+          if (!target) { setNotice({ identity, text: '请先填写本轮目标。' }); return }
+          if (Object.values(budget).some(value => !Number.isSafeInteger(value) || value < 1)) {
+            setNotice({ identity, text: '请为所有额度填写正整数。' }); return
+          }
+          if (budget.requests < 6 || budget.wallMinutes > 90 || budget.closeoutRequests < 6 || budget.closeoutTimeMs < 120000) {
+            setNotice({ identity, text: '请求次数至少 6 次，最长时间不超过 90 分钟；收尾至少预留 6 次请求和 120000 毫秒。' }); return
+          }
+          args = { authorizationId: `plan-ui-${sessionId}`, goal: target, budget }
+        }
+        pending.current.add(sessionId)
+        setBusyFor(identity)
+        setNotice(null)
+        try {
+          const result = await runPlanCommand(sessionId, `/chain-authorize ${JSON.stringify(args)}`, [])
+          if (!result?.ok) throw new Error(result?.error?.message ?? '启动服务尚未就绪，请稍后重试。')
+          const outcome = result.value?.result
+          if (outcome?.kind !== 'success') throw new Error(outcome?.text ?? '授权未完成，请重新读取状态后重试。')
+          if (current.current === identity) {
+            // Success is read back from the Host; a command receipt alone does
+            // not fabricate a binding. Starting never sends a model prompt.
+            await load()
+          }
+        } catch (error) {
+          if (current.current === identity) {
+            const startupError = `启动失败：${error?.message ?? error}`
+            // Grant persistence and first-round creation can fail separately.
+            // Refresh immutable Host state before allowing another attempt;
+            // this read never retries the authority-changing command.
+            await load()
+            if (current.current === identity) setNotice({ identity, text: startupError })
+          }
+        } finally {
+          pending.current.delete(sessionId)
+          if (current.current === identity) setBusyFor(null)
+        }
+      }
+
+      const budgetSummary = grant?.budget
+        ? PLAN_BUDGET_FIELDS.map(([key, label]) => `${label}：${grant.budget[key] ?? '—'}`).join('；') : ''
+      return React.createElement('section', {
+        'aria-label': '启动 plan',
+        style: { ...styles.wrap, width: '100%', boxSizing: 'border-box', padding: '14px', border: '1px solid rgba(127,127,127,0.32)', borderRadius: '10px' },
+      },
+      React.createElement('div', { style: styles.title }, '启动 plan'),
+      loading ? React.createElement('div', { role: 'status' }, '正在读取本会话的启动状态…') : null,
+      summary ? React.createElement('div', { role: 'status' }, liveStatus.message || summary) : null,
+      state === 'ready' && liveStatus.isRoot
+        ? React.createElement('div', { role: 'status' }, liveStatus.message || '新任务使用本会话的独立额度。请先启动 plan，再发送消息。') : null,
+      state === 'ready' && !liveStatus.isRoot
+        ? React.createElement('div', { role: 'status' }, '请在根 plan 会话确认目标和额度。') : null,
+      state === 'ready' && liveStatus.isRoot ? React.createElement(React.Fragment, null,
+        React.createElement('label', { style: styles.head }, '本轮目标',
+          React.createElement('textarea', {
+            'aria-label': '本轮目标', value: goal, disabled: busy, rows: 3,
+            placeholder: '描述希望 plan 完成的目标',
+            style: { ...styles.select, resize: 'vertical', boxSizing: 'border-box' },
+            onChange: event => setGoal(event.target.value),
+          })),
+        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: '10px' } },
+          ...PLAN_BUDGET_FIELDS.slice(0, 4).map(([key, label]) => React.createElement('label', { key, style: styles.head }, label,
+            React.createElement('input', {
+              'aria-label': label, type: 'number', min: key === 'requests' ? 6 : 1,
+              ...(key === 'wallMinutes' ? { max: 90 } : {}), step: 1, value: draft[key], disabled: busy,
+              style: { ...styles.select, boxSizing: 'border-box' },
+              onChange: event => setDraft(value => ({ ...value, [key]: event.target.value })),
+            })))),
+        React.createElement('details', null, React.createElement('summary', null, '收尾预留额度'),
+          ...PLAN_BUDGET_FIELDS.slice(4).map(([key, label]) => React.createElement('label', { key, style: styles.head }, label,
+            React.createElement('input', {
+              'aria-label': label, type: 'number', min: key === 'closeoutRequests' ? 6 : 120000, step: 1, value: draft[key], disabled: busy,
+              style: { ...styles.select, boxSizing: 'border-box' },
+              onChange: event => setDraft(value => ({ ...value, [key]: event.target.value })),
+            })))),
+        React.createElement('div', { style: styles.hint }, '以上额度为草稿。点击确认后授权并绑定本轮，随后即可发送消息。'),
+      ) : null,
+      grant && state !== 'ready' ? React.createElement('div', { style: styles.head },
+        React.createElement('div', null, `目标：${grant.goal}`),
+        React.createElement('div', { style: styles.hint }, budgetSummary)) : null,
+      message ? React.createElement('div', { role: 'alert', style: styles.message }, message) : null,
+      React.createElement('div', { style: styles.row },
+        canStart ? React.createElement('button', { type: 'button', style: styles.button, disabled: busy || loading, onClick: start },
+          busy ? '正在确认…' : restoring ? '恢复本轮绑定' : '确认目标和额度，启动 plan') : null,
+        React.createElement('button', { type: 'button', style: styles.button, disabled: busy || loading, onClick: load }, '重新读取'),
+      ))
+    }
+
     function Card() {
       const [data, setData] = React.useState(null)
       const [draft, setDraft] = React.useState({})
@@ -402,6 +625,24 @@ window.__ModuleLoader__.load({
       // resolved at runtime so a missing one degrades instead of hanging.
       inject: ['slots'],
       apply(ctx) {
+        try {
+          // This list slot is rendered in both the first-session hero and the
+          // normal composer. composer.dock only appears after the hero phase.
+          ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+            name: 'conversation.input.dock', id: 'role-chain-plan-start', order: -20,
+            inject: () => ({ planBlocks: (() => {
+              try { return ctx.get?.('conversation')?.blocks } catch { return undefined }
+            })(), runPlanCommand: async (...args) => {
+              let commands
+              try { commands = ctx.get?.('remote.commands') ?? ctx.remote?.commands } catch {}
+              if (typeof commands?.execute !== 'function') throw new Error('启动服务尚未就绪，请稍后重试。')
+              return commands.execute(...args)
+            } }),
+          }, PlanStartCard))
+          note('会话页已注册「启动 plan」卡片')
+        } catch (error) {
+          note(`启动卡片注册失败：${error && error.message ? error.message : error}`)
+        }
         try {
           ctx.slots.inject('settings.section', () =>
             ctx.slots.register(

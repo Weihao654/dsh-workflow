@@ -192,6 +192,12 @@ function attributedSession(ctx, options) {
 }
 async function unknownAttribution(controller) {
   for (const store of controller.stores.values()) {
+    const active = await store.read(state => {
+      const round = state.rounds[state.activeRoundId]
+      return Boolean(round?.control?.managed && !round.closedAt)
+    })
+    // Observing an unbound plan must never persist a new authority envelope.
+    if (!active) continue
     const roundId = await store.mutate(state => {
       const round = state.rounds[state.activeRoundId]
       if (!round?.control?.managed || round.closedAt) return null
@@ -217,6 +223,7 @@ export function installUsage(ctx, controller) {
     const config = await next(), admission = await controller.beforeRequest(payload.agent, payload.signal)
     if (!admission) {
       const exec = resolveExec(ctx, { agent: payload.agent })
+      if (controller.isWorkflowSession(exec)) return config
       return exec.role === 'plan' ? { ...config, maxTokens: Math.min(config.maxTokens ?? DEFAULT_OUTPUT_CAP, DEFAULT_OUTPUT_CAP) } : config
     }
     const { store, identity } = admission
@@ -240,10 +247,13 @@ export function installUsage(ctx, controller) {
     if (!exec.bindingValid) fail('ROLE_BINDING_INVALID', exec.bindingError)
     const admission = await controller.forSession(sessionId), requestId = newId('Q')
     if (!admission) {
-      const store = controller.storeForCwd(exec.cwd)
-      // Match request/tool scope; authorityRoot alone does not enroll an ordinary session.
-      const protectedScope = await store.read(state => Boolean(state.authorization || (state.activeRoundId && !state.rounds[state.activeRoundId]?.closedAt)))
-      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', 'Unbound role/standard cannot bypass a protected round. Pre-round model bootstrap requires trusted external admission.')
+      const store = controller.storeForExec(exec)
+      if (controller.isWorkflowSession(exec, store)) { yield* next(); return }
+      // Match the request/tool gate's durable session and ancestry enrollment.
+      const protectedScope = await store.read(state => controller.protectsSession(state, exec))
+      if (exec.role || protectedScope) fail('MANAGED_ROUND_REQUIRED', exec.role === 'plan' && exec.isRoot
+        ? '请先在本会话下方的「启动 plan」卡片中确认新任务目标和额度，再发送消息。'
+        : 'Unbound role/standard cannot bypass a protected round. Pre-round model bootstrap requires trusted external admission.')
       yield* next(); return
     } else {
       try {

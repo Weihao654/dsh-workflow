@@ -41,6 +41,10 @@ const spawnMode = !inProcess
 const fixtures = [
   'smoke.mjs', 'control.mjs', 'dispatch.mjs', 'authorization.mjs', 'authority-guard.mjs',
   'budget-admission.mjs', 'closeout-reserve.mjs', 'request-gate.mjs', 'role-binding.mjs', 'ordinary-scope.mjs', 'usage.mjs',
+  'plan-start.mjs', 'plan-start-api.mjs', 'plan-start-client.mjs',
+  'independent-plans.mjs',
+  'workflow-mode.mjs',
+  'workflow-tools.mjs',
   'bridge.mjs', 'compute-guest.mjs', 'evidence-interface.mjs', 'profile-dir.mjs',
 ]
 const scripts = ['api.mjs', 'routes.mjs']
@@ -60,9 +64,10 @@ if (native && process.env.DSH_BRIDGE_LIVE === '0') {
 // reported by node:test as one file-level pass, so comparing the count is what actually
 // detects a silently truncated file. Update this table when a file gains or loses tests.
 const expected = {
-  'smoke.mjs': 13, 'control.mjs': 19, 'dispatch.mjs': 3, 'authorization.mjs': 5,
+  'smoke.mjs': 13, 'control.mjs': 19, 'dispatch.mjs': 3, 'authorization.mjs': 11,
   'authority-guard.mjs': 2, 'budget-admission.mjs': 11, 'closeout-reserve.mjs': 18, 'request-gate.mjs': 4,
-  'role-binding.mjs': 5, 'ordinary-scope.mjs': 12, 'usage.mjs': 11, 'bridge.mjs': 11, 'compute-guest.mjs': 4,
+  'role-binding.mjs': 5, 'ordinary-scope.mjs': 18, 'usage.mjs': 11, 'bridge.mjs': 11, 'compute-guest.mjs': 4,
+  'plan-start.mjs': 7, 'plan-start-api.mjs': 3, 'plan-start-client.mjs': 21, 'independent-plans.mjs': 14, 'workflow-mode.mjs': 15, 'workflow-tools.mjs': 9,
   'evidence-interface.mjs': 6, 'profile-dir.mjs': 4, 'git.mjs': 2, 'windows.mjs': 1, 'evidence-native.mjs': 1,
   'bridge-live.mjs': 10, 'guest-boundaries.mjs': 8,
 }
