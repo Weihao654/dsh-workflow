@@ -1,0 +1,67 @@
+{
+  "name": "dsh-role-chain",
+  "version": "0.1.0",
+  "description": "One profile bundle that installs the role-chain presets (L1) and the role-chain protocol (L2) together: native plan/work/code/review collaboration plus the controlled-round ledger, gates and isolated compute.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "presets.patch.yml",
+    "cordis.patch.yml",
+    "lib/",
+    "bridge/",
+    "locale/",
+    "icon.svg",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "sync": "node scripts/sync-umbrella.mjs",
+    "sync:check": "node scripts/sync-umbrella.mjs --check",
+    "test": "node test/run.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weihao654/dsh-workflow.git",
+    "directory": "plugins/role-chain"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "workflow",
+    "round",
+    "audit",
+    "subagent",
+    "role-chain"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./presets.patch.yml",
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    },
+    "roleChain": {
+      "source": "generated from plugins/l1-presets + plugins/l2-protocol",
+      "contents": {
+        "presets": "dsh-role-chain-presets@1.1.0-workflow.1",
+        "protocol": "dsh-role-chain-protocol@0.3.0-workflow.20261107.2"
+      }
+    }
+  }
+}

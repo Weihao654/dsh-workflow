@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Role Chain — Round Protocol",
+    "description": "Controlled plan/work/code/review rounds with durable cancellation, fixed deadlines and request accounting. Compute requires full read-only confinement."
+  }
+}
