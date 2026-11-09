@@ -35,7 +35,7 @@
 //      request it, so the install polls for it instead of failing once.
 
 window.__ModuleLoader__.load({
-  id: 'dsh-role-chain-protocol',
+  id: 'dsh-role-chain',
   factory(require) {
     const React = require('react')
 
@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    note('client bundle 已加载（dsh-role-chain-protocol）')
+    note('client bundle 已加载（dsh-role-chain）')
 
     const HIDDEN = ['work', 'code', 'review']
     const INSTALLED = new WeakSet()
@@ -620,7 +620,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: 'dsh-role-chain-protocol',
+      name: 'dsh-role-chain',
       // Only a base client service is required; `remote.*` and the web route are
       // resolved at runtime so a missing one degrades instead of hanging.
       inject: ['slots'],

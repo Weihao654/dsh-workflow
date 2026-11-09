@@ -26,6 +26,33 @@ export const REQUIRED = [
 const PRESET_ROW = /^[ \t]*- id: preset-[a-z]+[ \t]*$/m
 const PROTOCOL_ROW = /^([ \t]*)name: 'dsh-role-chain-protocol'[ \t]*$/m
 
+// L2's client bundle is a plain script that registers its own module id. The
+// shipped loader keys factories by the *package* name of the Loader row, so a
+// mirrored copy inside package `dsh-role-chain` must register that name: with L2's
+// `dsh-role-chain-protocol` id the row stays unregistered, the loader falls back to
+// the package-local URL and runs the same script a second time, and the second
+// registration throws `client-modules: duplicate factory registration ...`, which
+// fails the whole web boot. This is the only byte difference from the L2 source.
+export const CLIENT_BUNDLE_ID = 'dsh-role-chain'
+const CLIENT_ID_LINE = /^([ \t]*)id: 'dsh-role-chain-protocol',$/gm
+const CLIENT_NAME_LINE = /^([ \t]*)name: 'dsh-role-chain-protocol',$/gm
+
+/**
+ * Rewrite the mirrored client bundle's registration identity to the umbrella name.
+ * @param {string} source the L2 `lib/client.js` source
+ * @returns {string} the umbrella copy
+ */
+export function rewriteClientIdentity(source) {
+  const ids = source.match(new RegExp(CLIENT_ID_LINE.source, 'gm')) ?? []
+  const names = source.match(new RegExp(CLIENT_NAME_LINE.source, 'gm')) ?? []
+  if (ids.length !== 1) fail(`l2 client bundle must register exactly one module id, found ${ids.length}`)
+  if (names.length !== 1) fail(`l2 client bundle must declare exactly one client plugin name, found ${names.length}`)
+  return source
+    .replace(new RegExp(CLIENT_ID_LINE.source, 'gm'), (_line, indent) => `${indent}id: '${CLIENT_BUNDLE_ID}',`)
+    .replace(new RegExp(CLIENT_NAME_LINE.source, 'gm'), (_line, indent) => `${indent}name: '${CLIENT_BUNDLE_ID}',`)
+    .replaceAll('（dsh-role-chain-protocol）', `（${CLIENT_BUNDLE_ID}）`)
+}
+
 const read = file => readFileSync(file, 'utf8')
 const readJson = file => JSON.parse(read(file))
 
@@ -69,7 +96,11 @@ export function buildPlan(root, repo) {
   expected.set('cordis.patch.yml', umbrellaPatch)
   expected.set('LICENSE', read(join(repo, 'LICENSE')))
   for (const dir of MIRROR_DIRS) {
-    for (const rel of walk(join(L2, dir))) expected.set(`${dir}/${rel}`, readFileSync(join(L2, dir, rel)))
+    for (const rel of walk(join(L2, dir))) {
+      const target = `${dir}/${rel}`
+      const source = readFileSync(join(L2, dir, rel))
+      expected.set(target, target === 'lib/client.js' ? rewriteClientIdentity(source.toString('utf8')) : source)
+    }
   }
   for (const rel of MIRROR_FILES) expected.set(rel, readFileSync(join(L2, rel)))
   for (const rel of REQUIRED) if (!expected.has(rel)) fail(`expected runtime file ${rel} is missing from the L2 source`)

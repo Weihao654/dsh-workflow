@@ -33,6 +33,8 @@ test/                           # 同步/工具/布局测试（不随包发布�
 
 `lib/`、`bridge/`、`locale/` 采用**扁平镜像**而不是 `vendor/l2/` 子目录，是因为 L2 的 `lib/profile-dir.js` 用自身模块位置推导 profile：`<profile>/node_modules/<包名>/lib/index.js`。若放进 `vendor/l2/`，在**不导出 `DSH_PROFILE_DIR`** 的桌面 Host 上会以 `AUTHORITY_LOCATION_REQUIRED` 失败（已由 `test/layout.test.mjs` 同时钉住"可用形状"和"不可用形状"）。
 
+`lib/client.js` 是与 L2 之间**唯一**的字节差异。L2 的 client bundle 以 `dsh-role-chain-protocol` 注册模块 id，而 client 装载器用 **Loader 行的包名**（这里是 `dsh-role-chain`）作为工厂 id；照抄 L2 的 id 会让该行被判为"未注册"，装载器随即回退到包内 URL 再执行同一脚本，第二次注册触发 `client-modules: duplicate factory registration for "dsh-role-chain-protocol"`，整个 web boot 失败（本机桌面版已实测）。因此生成器只改写 `id:`、`name:` 与日志文案三处为 `dsh-role-chain`，`test/generated.test.mjs` 钉住"恰好一处 id、一处 name，且 L2 源文件保持原样"。
+
 ## 开发
 
 ```bash

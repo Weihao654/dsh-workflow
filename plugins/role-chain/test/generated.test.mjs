@@ -7,7 +7,7 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, wri
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildPlan, driftOf, writePlan, MIRROR_DIRS, MIRROR_FILES, SyncError } from '../scripts/sync-lib.mjs'
+import { buildPlan, driftOf, writePlan, MIRROR_DIRS, MIRROR_FILES, CLIENT_BUNDLE_ID, rewriteClientIdentity, SyncError } from '../scripts/sync-lib.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO = resolve(ROOT, '..', '..')
@@ -51,9 +51,10 @@ test('the working tree is already in sync', () => {
   })
 })
 
-test('mirrored sources are byte-identical and presets/LICENSE are exact copies', () => {
+test('mirrored sources are byte-identical except the client identity rewrite, and presets/LICENSE are exact copies', () => {
   for (const dir of MIRROR_DIRS) {
     for (const rel of mirrorFiles(L2, dir)) {
+      if (`${dir}/${rel}` === 'lib/client.js') continue
       assert.deepEqual(readFileSync(join(ROOT, dir, rel)), readFileSync(join(L2, dir, rel)), `${dir}/${rel} drifted from l2-protocol`)
     }
   }
@@ -62,6 +63,19 @@ test('mirrored sources are byte-identical and presets/LICENSE are exact copies',
   }
   assert.deepEqual(readFileSync(join(ROOT, 'presets.patch.yml')), readFileSync(join(L1, 'cordis.patch.yml')), 'presets patch must be a byte copy of the L1 patch')
   assert.deepEqual(readFileSync(join(ROOT, 'LICENSE')), readFileSync(join(REPO, 'LICENSE')), 'LICENSE must match the repository LICENSE')
+})
+
+test('the mirrored client bundle registers the umbrella package id, not L2\u2019s', () => {
+  const l2 = read(join(L2, 'lib/client.js'))
+  const shipped = read(join(ROOT, 'lib/client.js'))
+  assert.equal(shipped, rewriteClientIdentity(l2))
+  assert.notEqual(shipped, l2, 'the identity rewrite must actually change the bundle')
+  assert.equal(shipped.split(`id: '${CLIENT_BUNDLE_ID}',`).length - 1, 1, 'exactly one module id, named after the umbrella package')
+  assert.equal(shipped.split(`name: '${CLIENT_BUNDLE_ID}',`).length - 1, 1, 'exactly one client plugin name')
+  assert.equal(shipped.includes(`id: 'dsh-role-chain-protocol'`), false, 'the shipped bundle must not register the standalone package id')
+  assert.equal(shipped.includes(`name: 'dsh-role-chain-protocol'`), false, 'the shipped bundle must not declare the standalone plugin name')
+  // L2 itself stays untouched: the rewrite exists only in the generated copy.
+  assert.equal(l2.split(`id: 'dsh-role-chain-protocol',`).length - 1, 1)
 })
 
 test('the protocol patch differs from L2 only in the single entry name line', () => {
