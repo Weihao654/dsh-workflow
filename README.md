@@ -8,7 +8,8 @@
 
 选择 `plan`，说一句需求；规划、协调、实现、独立评审自动发生，最后由 plan 向你交付。
 
-[![version](https://img.shields.io/badge/version-0.3.0--workflow.20261107.2-10b981?style=flat-square)](https://github.com/Weihao654/dsh-workflow/releases)
+[![bundle](https://img.shields.io/badge/bundle-0.1.0-10b981?style=flat-square)](https://github.com/Weihao654/dsh-workflow/releases)
+[![contents](https://img.shields.io/badge/contents-L1%201.1.0--workflow.1%20%C2%B7%20L2%200.3.0--workflow.20261107.2-0ea5e9?style=flat-square)](#包结构)
 [![fixtures](https://img.shields.io/badge/fixtures-209%20passed-22c55e?style=flat-square)](#验证)
 [![license](https://img.shields.io/badge/license-MIT-6366f1?style=flat-square)](LICENSE)
 [![status](https://img.shields.io/badge/status-PARTIAL%20%2F%20trial-f59e0b?style=flat-square)](#已知限制)
@@ -22,7 +23,7 @@
 - [这是什么](#这是什么)
 - [30 秒上手](#30-秒上手)
 - [默认工作流](#默认工作流)
-- [两个包](#两个包)
+- [包结构](#包结构)
 - [显式受控轮次](#显式受控轮次)
 - [验证](#验证)
 - [版本历史](#版本历史)
@@ -41,7 +42,7 @@ DSH 原生只有“一个会话对一条消息”。**Role Chain 把它变成一
 | ⚙️ **code** | 写代码、跑验证、回报真实结果 | 唯一可写角色 |
 | 🔍 **review** | 独立判断，给出 verdict / scope / uncovered | 每次新建、独立上下文；只读 |
 
-两个包、零宿主改动、无需单独进程 —— 通过 DSH 插件机制加载：
+一个伞包装齐、零宿主改动、无需单独进程 —— 通过 DSH 插件机制加载：
 
 - **不用**先填额度、启动轮次或逐步批准；
 - **不会**把日常使用套进预算与关轮账本；
@@ -52,9 +53,17 @@ DSH 原生只有“一个会话对一条消息”。**Role Chain 把它变成一
 
 ## 30 秒上手
 
-1. 在 DSH 中启用 `dsh-role-chain-presets`（L1）与 `dsh-role-chain-protocol`（L2）两个 bundle；
+1. 安装并启用伞包 `dsh-role-chain`（一条命令装齐 L1 预设 + L2 协议）：
+
+   ```powershell
+   dsh plugin --profile <profile> add github:Weihao654/dsh-workflow#path:/plugins/role-chain
+   ```
+
 2. 新建会话，在输入框上方把座位切到 **`plan（方案角色…）`**；
 3. 直接说需求。简单问答 plan 直接回答；实施任务自动按下面的链路回流。
+
+> [!TIP]
+> 想分开装也可以只启用 [L1](<plugins/l1-presets/README.md>) 与 [L2](<plugins/l2-protocol/README.md>) 两个源码包；它们与伞包插入同一批 loader 行，**不要同时启用**，从旧的两条迁移过来时先移除旧条目。
 
 ```text
 你 ──► plan ──► work ──► code ──► work ──► review ──► work ──► plan ──► 你
@@ -68,18 +77,21 @@ work / code / review 由 plan 派发，**不能直接对话**；你只和 plan �
 
 - 选择 plan，直接发消息；只有缺少关键资料、需要业务取舍或超出范围时才问你。
 - **不创建** L2 授权/用量账本，不套输出上限、请求计数、关轮预留，也**不强制** `chain_compute`。
-- 13 个受控工具通过官方 scoped `tools.restrict` 对新工作流隐藏；原生工具、权限与角色模型设置保持有效。
+- 14 个 `chain_*` 工具中的 13 个（除 `chain_role_models` 外）通过官方 scoped `tools.restrict` 对新工作流隐藏；原生工具、权限与角色模型设置保持有效。
 - plan/work 只读、code 写入、review 只读 —— 这是**提示词约定，不是文件系统隔离**。
 - 默认工作流下没有授权卡；需要预算/证据/关轮时才显式开启受控轮次。
 
-## 两个包
+## 包结构
 
 <img src="assets/packages.svg" alt="架构图：DSH 宿主、L1 角色预设、L2 轮次协议与工作区持久化数据" width="100%">
 
+推荐安装的是**伞包**：它把下面两个源码包的内容镜像进一个包，装一次就有四个预置、14 个工具和设置卡。
+
 | 包 | 版本 | 用途 | 边界 |
 |---|---|---|---|
-| [**L1 · 角色预设**](<plugins/l1-presets/README.md>) | `1.1.0-workflow.1` | `plan / work / code / review` 四个 agent preset 及协作协议；bundle patch 注入 | 可独立使用；没有 L2 时纪律主要依靠提示词与人工检查 |
-| [**L2 · 轮次协议**](<plugins/l2-protocol/README.md>) | `0.3.0-workflow.20261107.2` | 默认 plan 原生工作流、14 个工具、受控派发/停止、账本、模型设置卡、受控隔离作业 | 需要当前 Host API；真实 Host/GUI 集成验收未完成 |
+| [**伞包 · dsh-role-chain**](<plugins/role-chain/README.md>) | `0.1.0`（内含 L1 `1.1.0-workflow.1` · L2 `0.3.0-workflow.20261107.2`） | 一条命令装齐角色预设、协议运行时与设置卡；`lib/` 与 `bridge/` 是 L2 源码的镜像，生成物可复现 | 推荐安装；与下面两个源码包**不可同时启用**（同一批 loader id） |
+| [**L1 · 角色预设**](<plugins/l1-presets/README.md>) | `1.1.0-workflow.1` | `plan / work / code / review` 四个 agent preset 及协作协议；bundle patch 注入 | 源码包，可独立使用；没有 L2 时纪律主要依靠提示词与人工检查 |
+| [**L2 · 轮次协议**](<plugins/l2-protocol/README.md>) | `0.3.0-workflow.20261107.2` | 默认 plan 原生工作流、14 个工具、受控派发/停止、账本、模型设置卡、受控隔离作业 | 源码包；需要当前 Host API；真实 Host/GUI 集成验收未完成 |
 
 模型设置保留标准内置预设与 plan 的新会话入口，仅隐藏内部 work/code/review；手动选模优先于项目角色映射，effort 来自实际模型元数据、不硬编码档位。
 
@@ -120,6 +132,13 @@ node test/api.mjs                 # HTTP API 脚本
 node test/routes.mjs              # 路由脚本
 ```
 
+伞包自带生成物校验与独立测试：
+
+```powershell
+node scripts/sync-umbrella.mjs --check   # 镜像是否与 L2 源码逐字节一致（31 个文件）
+node test/run.mjs --in-process           # 16 例：生成物、模块 id、目录布局
+```
+
 - 夹具以**真实控制器 + 假 Host/Agent** 为主，确定性执行，**不产生付费模型请求**。
 - Windows 原生短任务测试会启动真实监督器与子孙进程，但显式使用 **fake-full 隔离契约**：只检查原生 Job、期限、参数与停止竞态，不能据此证明安全隔离、真实 Host 崩溃恢复或生产可用性。
 - Git 基线查询禁用已发现的过滤器及 fsmonitor/hook 回调，跳过子模块脏状态检查；该 dirty 结果只覆盖顶层工作树，可能不同于普通 `git status`。
@@ -150,6 +169,7 @@ node test/routes.mjs              # 路由脚本
 
 | 文档 | 内容 |
 |---|---|
+| [伞包安装与镜像说明](<plugins/role-chain/README.md>) | 一条命令安装、迁移步骤、镜像与模块 id 约定、开发校验 |
 | [L2 使用说明](<plugins/l2-protocol/README.md>) | 工具、默认工作流、受控轮次的具体行为 |
 | [L2 设计与限制](<plugins/l2-protocol/DESIGN.md>) | 架构、状态机、不做的事 |
 | [L2 验收范围](<plugins/l2-protocol/ACCEPTANCE.md>) | 每个版本变了什么、验证了什么、没验证什么 |
@@ -158,7 +178,8 @@ node test/routes.mjs              # 路由脚本
 ## 发布
 
 - 仓库：[**Weihao654/dsh-workflow**](https://github.com/Weihao654/dsh-workflow)
-- 市场提交：[PR #10945](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/10945)（是否合并必须查看实际当前状态，不能由提交成功推断）
+- 市场条目（推荐安装，已合并）：[PR #13413](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/13413) → `Weihao654/dsh-workflow#role-chain`
+- 旧的两条源码包条目：[PR #10945](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/10945) → `#l1-presets` 与 `#l2-protocol`
 
 ## License
 
