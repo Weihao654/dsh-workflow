@@ -1,12 +1,42 @@
 # dsh-role-chain（伞包 / umbrella bundle）
 
-**一个 bundle 装齐 role-chain**：本包把 [L1 预设](../l1-presets/)（plan / work / code / review 四个席位，纯配置）和 [L2 协议](../l2-protocol/)（14 个 `chain_*` 工具、受控轮次账本、门禁、隔离计算）合成**一次安装**。L1、L2 仍是唯一源码，本包内所有协议文件都由 `scripts/sync-umbrella.mjs` 从它们生成。
+**给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 装上会分工的 AI 团队 —— 一个 bundle 装齐。**
+
+选择 `plan`，说一句需求；规划、协调、实现、独立评审自动发生，最后由 plan 向你交付。
+
+本包把 [L1 预设](../l1-presets/)（`plan / work / code / review` 四个席位，纯配置）与 [L2 协议](../l2-protocol/)（14 个 `chain_*` 工具、受控轮次账本、门禁、隔离计算、设置卡）合成**一次安装**。L1、L2 仍是唯一源码，本包内的所有协议文件都由 `scripts/sync-umbrella.mjs` 从它们生成，不用手改。
 
 当前版本：`0.1.0`，内含 `dsh-role-chain-presets@1.1.0-workflow.1` + `dsh-role-chain-protocol@0.3.0-workflow.20261107.2`（记录于 `package.json` 的 `dsh.roleChain.contents`）。
 
+> 完整的产品介绍、架构图与版本历史以[仓库根 README](../../README.md)为准；本文只讲"这个包怎么装、怎么生成、验证到哪一步"。
+
+## 这是什么
+
+DSH 原生只有"一个会话对一条消息"。**Role Chain 把它变成一个 4 人小组**：
+
+| 角色 | 职责 | 关键约束 |
+|:--:|---|---|
+| 🧭 **plan** | 拆解任务、派发、汇总、面向用户交付 | 唯一能对用户讲话的角色；只读 |
+| 🛠 **work** | 协调执行、把任务派给 code / review、回收结果 | 同轮复用；只读 |
+| ⚙️ **code** | 写代码、跑验证、回报真实结果 | 唯一可写角色 |
+| 🔍 **review** | 独立判断，给出 verdict / scope / uncovered | 每次新建、独立上下文；只读 |
+
+默认是 **plan 原生工作流**：
+
+- 不用先填额度、启动轮次或逐步批准，也不创建授权/用量账本；
+- 需要证据与可核验关轮时，才走**显式受控轮次**（`/chain-authorize`，Host 命令，不产生模型请求）；
+- plan/work 只读、code 写入、review 只读 —— 这是**提示词约定，不是文件系统隔离**。
+
+> [!NOTE]
+> 当前为 **PARTIAL / 试用版**。离线夹具与脚本全绿；真实 Host 的完整模型协作仍属未验证，见文末[明确未验证](#明确未验证)与根 README 的"已知限制"。
+
 ## 安装
 
-把本目录作为 profile bundle 启用即可（需要在 profile 的 `dsh.profile.bundles` 里出现 `dsh-role-chain`，并让本包可被 profile 的 `node_modules` 解析）。
+```bash
+dsh plugin --profile <profile> add github:Weihao654/dsh-workflow#path:/plugins/role-chain
+```
+
+然后让 profile 的 `dsh.profile.bundles` 出现 `dsh-role-chain`，重启 Host。市场条目为 `Weihao654/dsh-workflow#role-chain`（搜 `role-chain`）。
 
 ### 从两个旧 bundle 迁移（必须按此顺序）
 
@@ -53,6 +83,14 @@ L2 的完整回归仍在原处：`cd ../l2-protocol && node test/run.mjs --in-pr
 - 真实市场的一键安装（本仓库的包未发布到 npm；GitHub 子目录条目的安装 spec 未实测）。
 - 隔离 Host 中的 GUI 渲染（席位/设置卡）；目前只有组合树、启动成功与 client 入口作为证据。
 - 与旧两个 bundle 同时启用时，重复行被静默覆盖已实测（按 bundle 顺序后者生效），但"运行期到底实例化了几份插件"未直接观测到。
+
+## 延伸阅读
+
+| 文档 | 内容 |
+|---|---|
+| [仓库根 README](../../README.md) | 产品介绍、架构图、验证范围、版本历史 |
+| [L2 使用说明](../l2-protocol/README.md) | 工具与受控轮次的具体行为 |
+| [L2 验收范围](../l2-protocol/ACCEPTANCE.md) | 每个版本变了什么、验证了什么、没验证什么 |
 
 ## License
 
